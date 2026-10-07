@@ -41,7 +41,8 @@ popup.html/.css/.js   UI (Summary / Draft tabs, settings, paste fallback)
 extract.js      injected into the case tab on demand; reads fields + history, de-duplicates
 engine.js       parsing, summary, stage detection, templates, IQS check (pure functions, no I/O)
 tests/          engine, extractor and popup tests (jsdom)
-_legacy/        the previous agents/content script, kept for reference only – not loaded
+(the previous agents/content script are in ../archive/extension-legacy – outside this folder because Chrome
+                rejects any file or folder starting with "_" inside an extension)
 ```
 
 ## Develop / test
