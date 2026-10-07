@@ -1,0 +1,12 @@
+{
+  "name": "iqs-response-agent-extension",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Chrome/Edge extension: reads the open Salesforce case and drafts the next IQS-compliant Proactive Support email.",
+  "scripts": {
+    "test": "node tests/engine.test.js && node tests/extract.test.js && node tests/popup.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

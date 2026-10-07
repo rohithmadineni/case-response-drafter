@@ -1,0 +1,19 @@
+{
+  "name": "case-response-drafter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Drafts IQS-compliant Rubrik Proactive Support customer emails from Salesforce case history – Cowork dashboard, offline page, CLI, and skill.",
+  "scripts": {
+    "build": "python3 tools/build.py",
+    "test": "python3 tools/build.py && node tests/run_tests.js",
+    "test:page": "python3 tools/build.py && node tests/offline_page.test.js",
+    "draft": "node tools/draft.js",
+    "example": "node tools/draft.js --history tests/fixtures/sample_history.txt --desc tests/fixtures/sample_description.txt --case 01999999 --subject \"[AcmeCorp] Proactive Case: (Cluster name: ACME-PROD-01) Node is Bad\" --status \"In Progress\""
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

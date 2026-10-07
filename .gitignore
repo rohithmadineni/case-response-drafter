@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+
+# Internal Rubrik guides - keep out of the repo
+IQS Guidebook*
+IQS Scoring Guide*

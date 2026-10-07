@@ -1,0 +1,723 @@
+{
+  "meta": {
+    "name": "Rubrik Proactive Support – Customer Response Knowledge Base",
+    "owner": "Rohith Madineni, Customer Success Engineer – Proactive Support",
+    "version": "1.0",
+    "last_updated": "2026-10-05",
+    "aligned_to": "IQS Scoring Guide v1.5.2",
+    "how_to_use": [
+      "1. Pull the Case and all CaseComments from Salesforce (see salesforce_queries). Read every comment; large results come back as files – read them in chunks.",
+      "2. Match the alert description and log evidence to a scenario using scenario.alert_signatures and scenario.internal_investigation.",
+      "3. Pick the template for the stage you are in: initial_response, update, approval_request, or closure.",
+      "4. Replace every {{placeholder}}. Delete optional [bracketed] text that does not apply.",
+      "5. Run the iqs_checklist before sending. After every closure, add the Resolution Details summary."
+    ]
+  },
+  "global_rules": {
+    "language": [
+      "Never use the phrase 'data loss'.",
+      "Never include the line 'No data disruption to backup/restore operations was observed'.",
+      "Use plain language. Explain jargon (bond0, SEL, SystemdCheck) in a few words the first time it appears.",
+      "Correct grammar and spelling on every draft. Keep closures concise.",
+      "Use 'close this case', not 'archive'."
+    ],
+    "timestamps": [
+      "All times in UTC.",
+      "Only include timestamps where they add meaning (incident time, BAD/revived times, follow-up deadline)."
+    ],
+    "follow_up_date": {
+      "default": "Two days after today at 12:00 PM UTC, written as 'Month D, YYYY, 12:00 PM UTC'.",
+      "customer_gave_a_date": "If the customer named a date for their work (part arrival, replacement, maintenance), set the follow-up one day after the latest date they gave.",
+      "always_fill": "Never leave [DATE]/[TIME] placeholders in a sent email."
+    },
+    "customer_facing_content": [
+      "Do not paste raw commands, '>>' log lines, debug output, internal insight IDs, internal Jira/engineering ticket IDs, or Slack links.",
+      "Short quoted error messages are fine when the customer needs to act on them (e.g. a tunnel connection error).",
+      "Public support.rubrik.com KB links are fine in IR 'Fix' sections."
+    ],
+    "signature": {
+      "default": "Thanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+      "rule": "If the snippet was written by another engineer, keep their name and title in the sign-off."
+    },
+    "always_flag_to_user_before_sending": [
+      "Closing earlier than a monitoring period the customer asked for.",
+      "Unanswered customer questions in the thread.",
+      "Approvals that came from a third party (e.g. an MSSP SOC) rather than the cluster owner.",
+      "Multiple nodes or multiple clusters affected at the same time (possible shared cause).",
+      "Empty or mismatched Account/contact data in Salesforce.",
+      "Truncated log output that could hide a second event."
+    ],
+    "after_every_closure": "Append 'Resolution Details:' – 1-2 plain-language lines covering the issue, the fix applied, and how it was validated / current status. No internal-only content."
+  },
+  "iqs_checklist": {
+    "every_non_closing_comment": [
+      "WHAT – what was found or done.",
+      "WHEN – a concrete date/time for the next update (missing When = Reliability 0/20).",
+      "WHY – the reason for the finding or the ask."
+    ],
+    "first_three_comments": [
+      "Business Impact – link the technical issue to a business consequence (or ask the customer about impact).",
+      "Technical definition signals – problem statement, context, investigation steps, environment/scope, accuracy, concrete next action, concrete timeline, rationale."
+    ],
+    "closing_comment_clear_resolution_signals": [
+      "1. Problem summary + root cause",
+      "2. Resolution steps",
+      "3. Validation / confirmation of current health",
+      "4. Prevention / follow-up recommendation"
+    ],
+    "ghosted_case_signals": {
+      "definition": "3 or more substantive follow-ups with no customer response.",
+      "signals": [
+        "Case closed out",
+        "Outreach attempts acknowledged",
+        "Status recapped at close",
+        "Re-open / reference invited"
+      ]
+    },
+    "penalties_to_avoid": [
+      "Making the customer repeat information already given (-2 per instance, max -5).",
+      "Missing a promised update date (counts as a missed commitment)."
+    ]
+  },
+  "salesforce_queries": {
+    "case": {
+      "objectName": "Case",
+      "fields": [
+        "CaseNumber",
+        "Subject",
+        "Account.Name",
+        "Status",
+        "Resolution__c",
+        "Description"
+      ],
+      "whereClause": "CaseNumber = '{{case_number}}'"
+    },
+    "comments": {
+      "objectName": "CaseComment",
+      "fields": [
+        "CommentBody",
+        "CreatedDate",
+        "CreatedBy.Name"
+      ],
+      "whereClause": "ParentId IN (SELECT Id FROM Case WHERE CaseNumber = '{{case_number}}')",
+      "orderBy": "CreatedDate ASC"
+    },
+    "comments_since": "Add \"AND CreatedDate > YYYY-MM-DDTHH:MM:SSZ\" to only pull new comments on a case already reviewed."
+  },
+  "shared_blocks": {
+    "ir_opening": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\n",
+    "support_tunnel_request": "Could you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel",
+    "maintenance_question": "Could you also confirm whether any maintenance, activity, or outage occurred on the host or network side around the incident time?",
+    "monitored_24x7": "Please note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.",
+    "closure_opening": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\n",
+    "closure_ending": "No further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+    "signature": "Thanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+    "closure_format": "Problem Summary: / Root Cause: / Resolution Steps: (bullets) / standard closing lines. Section headers are plain text."
+  },
+  "scenarios": [
+    {
+      "id": "NB-01",
+      "category": "Node Bad / Node Stale",
+      "title": "Stale status on system startup (node rebooted or powered off)",
+      "alert_signatures": [
+        "NodeBad: 4 is greater than or equal to threshold",
+        "NodeStale: -4 is greater than or equal to threshold",
+        "node-status-history: 'Status stale on system startup'"
+      ],
+      "internal_investigation": [
+        "node-status-history / rknodestatus",
+        "uptime and kern.log boot lines around incident",
+        "auth.log for poweroff/reboot commands",
+        "ipmitool sel list for ACPI power events",
+        "/var/crash and smaps.log (rule out crash/memory)",
+        "gaps in logs (node was off)"
+      ],
+      "root_cause_customer_language": "The node restarted (planned power-off, reboot, or a site power event). During startup its status timestamp went stale before cluster communication was fully re-established, which triggered the alert. This is expected after a restart and does not indicate a hardware or software fault.",
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a Node Bad alert on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Node Bad\n\nBusiness Impact: The affected node is marked BAD. No active production impact has been observed. However, if the condition recurs, it could affect workloads running on or protected by this node.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nCould you also confirm whether any maintenance, activity, or outage occurred on the host or network side around the incident time?\n\nOnce I have access, I will review the node status and share my findings by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "update_ask_maintenance": "Hello {{contact_name_or_Team}},\n\nUpon reviewing the logs, I can confirm that the node is currently in an OK state. The alert was triggered by a stale status on system startup. While the node has self-recovered, if this condition recurs it could impact workloads running on or protected by this node.\n\n[Optional: During my investigation, I also noticed that no logs are present on the node between {{gap_start}} and {{gap_end}}.] Could you please confirm whether any maintenance or activity was performed on the cluster around this time? This will help us complete our root cause analysis.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Node Bad alert on cluster {{cluster_tag}}, with node {{node_id}} marked BAD at {{bad_time_utc}}. The node self-recovered to an OK state at {{revived_time_utc}} without any intervention.\n\nRoot Cause:\nLog analysis confirmed that node {{node_id}} restarted on {{restart_time_utc}} [planned power-off / reboot / site power event]. During startup, the node's status timestamp went stale before cluster communication was fully re-established, triggering the alert. This is expected behavior after a restart and is not indicative of an underlying hardware or software issue.\n\nResolution Steps:\n\n* Reviewed node status history and system logs, confirming the alert was caused by a stale status on system startup after the restart.\n* Verified that node {{node_id}} self-recovered to an OK state and has remained stable since.\n* Confirmed all nodes on cluster {{cluster_tag}} are currently healthy.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "resolution_details_example": "Node {{node_id}} triggered a Node Bad alert after a restart, as its status timestamp went stale during startup before cluster communication was restored. The node recovered on its own, no hardware or software fault was found, and the cluster has remained stable since.",
+      "notes": [
+        "If it recurs at the same hour on many dates, treat it as a scheduled host/site activity and ask the customer about it.",
+        "If the customer never confirms maintenance after 3+ follow-ups, use the ghosted closure (PROC-01) or a normal closure if the user asks."
+      ]
+    },
+    {
+      "id": "NB-02",
+      "category": "Node Bad / Node Stale",
+      "title": "Network loss – bond0 running without any active interface",
+      "alert_signatures": [
+        "syslog: 'bond0: now running without any active interface!'",
+        "kernel: 'NIC Link is Down' on both bond slaves",
+        "node-status-history: 'Stale status timestamp' shortly after the bond event"
+      ],
+      "internal_investigation": [
+        "zgrep 'without any' /var/log/syslog* across all nodes – note exact times",
+        "Check if drops repeat at fixed times (00:00 / 08:00 UTC) → scheduled host/network job",
+        "Compare with sibling clusters for the same second (shared infrastructure)",
+        "Virtual edge (VRHV/VREC/VRVW): host vSwitch / host backup / patching"
+      ],
+      "root_cause_customer_language": "Both network interfaces in the node's network bond (bond0) lost their link at the same time, so the node had no connectivity and could not send its health updates. The cluster marked it BAD until connectivity returned. This points to the switch, cabling, or (for virtual appliances) the host's virtual switch – not the Rubrik node.",
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a Node Bad alert on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Node Bad\n\nBusiness Impact: The affected node is marked BAD. No active production impact has been observed. However, if the condition recurs, it could affect workloads running on or protected by this node.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nCould you also confirm whether any maintenance, activity, or outage occurred on the host or network side around the incident time?\n\nOnce I have access, I will review the node status and share my findings by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "update_findings": "Hello {{contact_name_or_Team}},\n\nThank you for your patience while we investigated this alert.\n\nFindings:\nNode {{node_id}} was marked BAD from {{bad_time_utc}} to {{revived_time_utc}}. Our log review shows that at {{bond_drop_time_utc}} the node's network bond (bond0) lost all of its active network interfaces. Without network connectivity, the node could not send its regular health updates, so the cluster marked it BAD. Once connectivity returned, the node recovered automatically. We found no signs of a crash or hardware fault.\n\n[Optional – recurring: The same network loss also occurred on {{other_dates}}, each time within seconds of {{fixed_time}} UTC, which points to a scheduled task on the host or network.]\n\nBusiness Impact:\nThe node is currently healthy. However, while this keeps happening, backups and restores running on this node may be interrupted at those times.\n\nNext Steps:\nCould you please check with your network [and virtualization host] team whether anything ran around these times – for example switch maintenance, port or cabling changes, host backups or checkpoints, virtual switch or NIC teaming changes, or host patching?\n\nWe will keep monitoring and share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Node Bad alert on cluster {{cluster_tag}}, with node {{node_id}} marked BAD at {{bad_time_utc}}. The node self-recovered at {{revived_time_utc}} without any intervention.\n\nRoot Cause:\nKernel log analysis showed that both network interfaces in bond0 on node {{node_id}} lost their link at {{bond_drop_time_utc}}, leaving the node with no active network connection. This brief network disruption caused the node's status timestamp to go stale, triggering the alert. Once connectivity was restored, the node recovered and has remained stable since.\n\nResolution Steps:\n\n* Reviewed node status history and kernel logs, confirming the alert was caused by a transient network disruption rather than a fault on the node itself.\n* Verified that both network interfaces recovered and the node returned to an OK state without intervention.\n* Confirmed all nodes on cluster {{cluster_tag}} are currently healthy.\n* [Prevention: We recommend reviewing switch/host activity at {{fixed_time}} UTC so the connection is not interrupted again.]\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "resolution_details_example": "Node {{node_id}} triggered a Node Bad alert because both interfaces in its network bond briefly lost link, so the node lost connectivity. It recovered once the link returned; no fault was found on the node and the cluster is healthy."
+    },
+    {
+      "id": "NB-03",
+      "category": "Node Bad / Node Stale",
+      "title": "IP address conflict on bond0",
+      "alert_signatures": [
+        "Recurring 'Stale status timestamp' on one or more nodes",
+        "arping shows a second, non-Rubrik MAC answering for the node IP"
+      ],
+      "internal_investigation": [
+        "Run IP conflict check / arping on bond0 for every node",
+        "Record node IP, node MAC, and conflicting MAC for each node"
+      ],
+      "root_cause_customer_language": "Another device on the network is using the same IP address as the node, so the node intermittently loses connectivity and is marked BAD.",
+      "templates": {
+        "update_findings": "Hello {{contact_name_or_Team}},\n\nThank you for your patience while we investigated this alert.\n\nRoot Cause Analysis:\nOur investigation identified that node {{node_id}} has an IP address conflict on interface bond0. The node's IP address {{node_ip}} (MAC {{node_mac}}) is also being answered by an external device with MAC address {{conflicting_mac}}, which does not belong to the Rubrik cluster. [We found the same conflict on the other nodes – details below.]\n\n{{conflict_table}}\n\nThis conflict causes intermittent loss of network connectivity, resulting in the repeated Node Bad events.\n\nNext Steps:\nCould you please check with your network team to identify the device using these addresses and change its IP? We will continue to monitor the cluster in the meantime.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected recurring Node Bad alerts on cluster {{cluster_tag}}. The node recovered each time, but the repeating pattern pointed to a network problem rather than a hardware fault.\n\nRoot Cause:\nThe nodes had an IP address conflict on bond0. Each node's IP address was also being claimed by a device outside the cluster, which your team identified as {{conflicting_device}}. Because two devices were answering for the same address, the nodes intermittently lost connectivity.\n\nResolution Steps:\n\n* Confirmed the repeated stale-status events were caused by lost network connectivity, not a hardware or software fault.\n* Ran ARP checks across all nodes and identified the conflicting MAC addresses.\n* Your team changed the IP addresses on the conflicting devices.\n* Monitored the cluster after the change – no further alerts, and all nodes are OK.\n* To prevent recurrence, we recommend reserving the Rubrik node IP addresses ({{node_ip_range}}) or excluding them from any DHCP range.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "resolution_details_example": "Nodes kept dropping into a BAD state because another device on the network was using the same IP addresses. The customer changed the conflicting device's IP; no alerts since, and we recommended reserving the node IPs."
+    },
+    {
+      "id": "NB-04",
+      "category": "Node Bad / Node Stale",
+      "title": "bond0 / bond1 cross connection",
+      "alert_signatures": [
+        "Node Bad with network flaps; cabling/switch links bond0 and bond1 to each other",
+        "Matches a previous case on the same account"
+      ],
+      "internal_investigation": [
+        "Confirm bond0/bond1 cross-connection on affected nodes",
+        "Reference the earlier matching case number"
+      ],
+      "root_cause_customer_language": "The cabling or switch configuration links the node's two network bonds to each other, so traffic can take the wrong path and the node briefly loses connectivity.",
+      "templates": {
+        "approval_request": "Hello {{contact_name_or_Team}},\n\nThank you for your patience while we investigated this alert.\n\nWe have reviewed the cluster and found the same issue identified in case {{previous_case}}. The cabling or switch configuration is linking the nodes' two network bonds, bond0 and bond1, to each other. As a result, network traffic can intermittently take the wrong path, and the nodes briefly lose connectivity, which caused the Node Bad alert.\n\nIf this isn't fixed, the alerts are likely to keep coming back, and affected nodes may be unavailable for backup and restore operations each time.\n\nTo resolve this, we recommend bringing the bond1 interface down on the affected nodes and setting it to stay down after a reboot. Could you please confirm if we can proceed with this change?\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected Node Bad alerts on cluster {{cluster_tag}} caused by intermittent network connectivity loss.\n\nRoot Cause:\nThe node's two network bonds (bond0 and bond1) were cross-connected through the cabling or switch configuration, causing traffic to intermittently take the wrong path.\n\nResolution Steps:\n\n* Identified the bond0/bond1 cross-connection on the affected nodes.\n* With your approval, brought bond1 down and made the change persistent across reboots.\n* Monitored the cluster after the change – no further alerts, and all nodes are healthy.\n* We recommend reviewing the switch/cabling configuration so bond1 is not cross-connected if it is re-enabled in future.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "NB-05",
+      "category": "Node Bad / Node Stale",
+      "title": "Memory pressure from concurrent indexing / verification jobs",
+      "alert_signatures": [
+        "'Stale status timestamp' during nightly window",
+        "atop: very low available memory, high load, high IO wait, PSI stalls",
+        "Many INDEX_SNAPPABLE_SNAPSHOTS UML guests; FILESET_SNAPSHOT_VERIFICATION",
+        "Possible CockroachDB 'kronos stall' / service restarts",
+        "Often on lower-memory nodes (e.g. 64 GB)"
+      ],
+      "internal_investigation": [
+        "atop before/during the event",
+        "rk-index.service memory and number of index guests",
+        "Check snappableIndexJobInMemorySemShares",
+        "Rule out OOM kill, crash, network, disk",
+        "Compare with other nodes' memory size and history"
+      ],
+      "root_cause_customer_language": "Several resource-intensive jobs (VM snapshot indexing and backup verification) ran at the same time and used up the node's memory. The node could not send its health updates in time and was marked BAD; it recovered once the jobs finished and memory was freed.",
+      "templates": {
+        "update_findings": "Hello {{contact_name_or_Team}},\n\nThank you for your patience while we investigated this alert.\n\nProblem Summary:\nOn {{date}}, from {{bad_time_utc}} to {{revived_time_utc}}, node {{node_id}} in cluster {{cluster_tag}} was temporarily marked unhealthy. The node recovered on its own with no manual intervention and has remained stable since. If this recurs, it could affect workloads running on or protected by this node.\n\nRoot Cause:\nThe node briefly ran out of available memory while several resource-intensive tasks ran at the same time:\n\n* Nightly indexing of VM snapshots, which makes files searchable for recovery\n* {{n}} large backup verification jobs\n* The node's normal background services\n\n[This node has {{memory_gb}} GB of memory, less than most other nodes in the cluster.] As memory ran low, the node's services slowed down and one core service restarted itself as a safety measure. The cluster marked the node unhealthy while services restarted, then returned it to normal.\n\nThis was not a hardware failure, a network problem, or a system crash, and no other node was affected.\n\nResolution Steps:\n\n* Reviewed node resource usage and confirmed a memory saturation event caused by concurrent indexing and verification workloads.\n* Confirmed the node recovered automatically.\n* [Transient: This is the first occurrence, so no configuration change is recommended at this time.] [Recurring: We recommend reducing the number of indexing jobs that can run in memory at the same time – see below.]\n\nWe will continue to monitor the node and provide an update by {{followup_datetime_utc}}, or sooner if any new alerts are observed.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "approval_request_tuning": "Hello {{contact_name_or_Team}},\n\nThank you for your patience while we investigated these alerts.\n\nOur review shows the nodes are going down due to memory pressure from the indexing service. During the incident windows, multiple index jobs were running at the same time, which significantly increased memory use and led to the node becoming unhealthy.\n\nAs a first remediation step, we recommend lowering the number of indexing jobs that can run in memory at the same time from {{current_value}} to 3. This reduces peak memory use during heavy indexing. The change does not require any downtime.\n\nCould you please confirm if we can proceed with this change?\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected Node Bad alerts on cluster {{cluster_tag}} during the nightly window, on node(s) {{node_list}}. Each node recovered on its own after about {{minutes}} minutes.\n\nRoot Cause:\nEach event happened while several VM snapshot indexing jobs were running at the same time and using a large amount of memory. With available memory very low, the node could not send its regular health updates in time, so the cluster marked it BAD. None of the nodes crashed or rebooted.\n\nResolution Steps:\n\n* Reviewed node status history, memory and CPU usage, and indexing activity, confirming the events matched periods of heavy concurrent indexing.\n* With your approval, lowered the number of indexing jobs that can run in memory at the same time on all nodes. No downtime was required.\n* Confirmed the new setting is active and no new Node Bad alerts have been triggered since the change.\n* To further spread the load, you can set a backup window per SLA Domain in Rubrik Security Cloud and move some larger VMs to a different window.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "resolution_details_example": "Nodes briefly went BAD during nightly backups because too many VM indexing jobs ran at once and used up the available memory. We lowered the number of concurrent in-memory indexing jobs; no alerts since, and all nodes are healthy.",
+      "notes": [
+        "If the customer asked to monitor for a set period after the change, do not close before it ends – put the case on hold (PROC-05) instead, or flag it to the user."
+      ]
+    },
+    {
+      "id": "NB-06",
+      "category": "Node Bad / Node Stale",
+      "title": "SystemdCheck failure (OS networking / systemd unresponsive)",
+      "alert_signatures": [
+        "node-status-history: 'systemd check'",
+        "health-monitor: 'SystemdCheck check FAILED'",
+        "systemctl status for udev / networking / dbus times out (exit 124)",
+        "PolicyMonitorTask: 0 of 24 consecutive checks passed"
+      ],
+      "internal_investigation": [
+        "Check health-monitor logs for SystemdCheck",
+        "systemctl status udev networking dbus with timeout",
+        "Check whether other nodes show the same reason (recurring across nodes)"
+      ],
+      "root_cause_customer_language": "An underlying operating system check failed because the OS networking service had trouble bringing up the bonded network interface, even though Rubrik services stayed up. The health monitor marked the node BAD because of the failing check.",
+      "templates": {
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Node Bad alert on node {{node_id}} in cluster {{cluster_tag}}. The node was marked BAD because an operating system health check (SystemdCheck) kept failing, while Rubrik services remained up.\n\nRoot Cause:\nThe OS networking service reported errors bringing up the bonded interface bond0, which caused SystemdCheck to fail repeatedly even though Rubrik services remained operational.\n\nResolution Steps:\n\n* Identified the failing SystemdCheck and traced it to errors in the OS networking service bringing up bond0.\n* Performed a controlled reboot of the affected node to reset the systemd and networking state.\n* Verified the node returned to an OK state, with SystemdCheck and all other health checks passing.\n* Confirmed the cluster is healthy with no further alerts.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "recurring_follow_up_tunnel": "Hello {{contact_name_or_Team}},\n\nThis is a follow-up on case {{case_id}} for cluster {{cluster_tag}}.\n\nSince our last update, our monitoring has detected further Node Bad alerts with the same pattern – the systemd health check failed, the node was marked BAD, and it later recovered:\n\n{{node_event_list}}\n\nAll nodes are currently OK. However, the same condition has now appeared on more than one node. If it continues, more than one node could be unavailable at the same time, which would reduce the cluster's resiliency and could affect backup and restore operations.\n\nTo find out why the check keeps failing and prevent it from happening again, could you please re-enable the support tunnel and confirm once it is open?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "resolution_details_example": "The node was marked BAD because an OS-level SystemdCheck couldn't bring up the bonded network interface, even though Rubrik services stayed up. A controlled reboot reset the networking state and all health checks now pass."
+    },
+    {
+      "id": "NB-07",
+      "category": "Node Bad / Node Stale",
+      "title": "mdadm memory leak (r7000 nodes)",
+      "alert_signatures": [
+        "Node Bad on r7000 nodes",
+        "mdadm --monitor --scan process memory growing",
+        "mdadm v4.3 (Ubuntu 4.3-1ubuntu2.1)"
+      ],
+      "internal_investigation": [
+        "Confirm node model r7000 on all nodes",
+        "Check mdadm monitor memory use"
+      ],
+      "root_cause_customer_language": "A known memory leak in the upstream mdadm package (not a Rubrik bug) causes its monitoring process to keep using more memory until the node runs low. It is fixed in mdadm 4.5.",
+      "templates": {
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Node Bad alert on cluster {{cluster_tag}}, with node {{node_id}} marked BAD at {{bad_time_utc}}. The node recovered at {{revived_time_utc}}. Investigation identified an mdadm memory leak affecting all r7000 nodes in the cluster.\n\nRoot Cause:\nA known memory leak in the upstream mdadm package (v4.3) caused the mdadm monitoring process to keep accumulating memory, exhausting available RAM on node {{node_id}} and triggering the Node Bad event. This is an upstream issue, fixed in mdadm 4.5.\n\nResolution Steps:\n\n* Confirmed the mdadm memory leak as the root cause of the Node Bad event.\n* With your approval, applied the recommended workaround on all r7000 nodes by stopping and masking the mdmonitor service.\n* Added a daily safeguard job to keep the mdmonitor service controlled.\n* Confirmed all nodes are OK with no new alerts during the monitoring period.\n* The permanent fix will ship in a future CDM release that includes mdadm 4.5; no reapplication is needed after upgrading to that version.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "NB-08",
+      "category": "Node Bad / Node Stale",
+      "title": "Azure cloud node – storage command queue saturation (hv_storvsc)",
+      "alert_signatures": [
+        "Azure (VRAZ) node goes stale repeatedly, often needs reboot",
+        "hv_storvsc errors 0xc0000001; commands piling up in the storage queue"
+      ],
+      "internal_investigation": [
+        "Check kernel log for hv_storvsc rejections",
+        "Count outstanding commands vs queue depth (~1,200)",
+        "Confirm disk_util_helper probe pattern"
+      ],
+      "root_cause_customer_language": "A disk-identification check sends a type of storage command that Azure's virtual disks don't support. Azure rejects them, the rejected commands build up in the storage queue until it fills, and disk I/O blocks – so the node stops responding until it is rebooted.",
+      "templates": {
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected Node Bad/Stale alerts on cloud cluster {{cluster_tag}}, with node {{node_id}} becoming unresponsive.\n\nRoot Cause:\nA disk-identification check on the node sends storage commands that Azure's virtual disks do not support. Azure rejects these commands, they accumulate in the storage queue until it is full, and disk I/O on the node blocks.\n\nResolution Steps:\n\n* Confirmed the storage queue saturation from rejected disk-identification commands.\n* With your approval, applied the workaround that stops the unsupported commands from being sent to Azure disks.\n* Monitored the node after the change – no further alerts.\n* The permanent fix will be included in a future CDM release.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "notes": [
+        "If the customer never applied the workaround and went silent, use the ghosted closure and state the workaround was not applied."
+      ]
+    },
+    {
+      "id": "NB-09",
+      "category": "Node Bad / Node Stale",
+      "title": "TCP retransmissions / packet loss",
+      "alert_signatures": [
+        "health-monitor TCPRetransmitChecker failed (>1% retransmits)",
+        "ping loss above limit on eth0"
+      ],
+      "internal_investigation": [
+        "Check retransmit stats windows",
+        "Confirm NIC link, speed/duplex, ring buffers healthy",
+        "Check NTP/TimeshiftDetection to rule out time issues"
+      ],
+      "root_cause_customer_language": "For a short window the node saw high packet retransmissions and packet loss on its network interface. The health monitor paused the node's liveness updates, so the cluster marked it BAD until the network checks passed again.",
+      "templates": {
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Node Bad alert on node {{node_id}}, which entered a BAD state at {{bad_time_utc}} and self-recovered at {{revived_time_utc}}.\n\nRoot Cause:\nElevated TCP retransmissions and packet loss on the node's network interface during {{window_utc}} caused the health monitor to pause its liveness updates. The node's status timestamp stopped advancing and it was marked BAD. Once network checks passed again, the node recovered automatically.\n\nResolution Steps:\n\n* Identified elevated retransmissions and packet loss as the trigger for the Node Bad event.\n* Confirmed the node recovered without intervention.\n* Verified the network link is up, NTP is synchronized, and time-shift checks are passing.\n* Recommended reviewing upstream network devices for congestion or packet loss around the affected time window.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "NB-10",
+      "category": "Node Bad / Node Stale",
+      "title": "HPE firmware defect (unexpected reboots / ASR)",
+      "alert_signatures": [
+        "Recurring Node Bad/Stale on HPE DL380/DL360 Gen11",
+        "hw_health: 'Unable to read memory SDR this run'",
+        "AHS: 'ASR Detected by System ROM'",
+        "Old firmware baseline"
+      ],
+      "internal_investigation": [
+        "Check BIOS/BMC versions on all nodes",
+        "Collect AHS logs from customer",
+        "Open HPE case"
+      ],
+      "root_cause_customer_language": "The nodes were on an older firmware baseline with a known defect that caused memory sensors to be misread and triggered automatic server recovery reboots.",
+      "templates": {
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected recurring Node Bad/Stale alerts on cluster {{cluster_tag}}. The nodes were experiencing unexpected reboots tied to a known HPE firmware defect.\n\nRoot Cause:\nAnalysis of the AHS logs with HPE support confirmed the nodes were running an outdated firmware baseline. This firmware contained a known defect that caused memory sensors to be misread and periodic automatic server recovery (ASR) reboots.\n\nResolution Steps:\n\n* Identified the HPE firmware defect from hardware logs.\n* Engaged HPE support, who recommended an SPP firmware upgrade to BIOS {{bios_version}} and BMC {{bmc_version}}, excluding the TPM firmware.\n* Coordinated with you while you applied the upgrade across all nodes.\n* Confirmed all nodes are on the updated versions and no further alerts have been observed.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "notes": [
+        "Customers may worry about TPM firmware – confirm with HPE that the SPP excludes TPM before asking them to upgrade."
+      ]
+    },
+    {
+      "id": "NB-11",
+      "category": "Node Bad / Node Stale",
+      "title": "Multiple nodes affected at once",
+      "alert_signatures": [
+        "Impacted Nodes lists 2+ nodes within a short period",
+        "Same issue on sibling clusters at the same time"
+      ],
+      "internal_investigation": [
+        "Compare event times across nodes/clusters to the second",
+        "Check shared power, network, host, or maintenance"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected alerts on multiple nodes on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Node Bad / Node Stale — multiple nodes\n\nBusiness Impact: {{n}} nodes in the cluster have reported a bad or stale state within a short period. With several nodes affected, the cluster has reduced resiliency, and backup and restore operations on these nodes may be affected. Because more than one node is involved, this may point to a shared cause such as a network, power, or maintenance event.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nImpacted Nodes and Incident Times (UTC):\n{{node_time_list}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nCould you also confirm whether any maintenance, network changes, power work, or outages took place around these times?\n\nOnce we have access, we will check all affected nodes and look for a common cause. We will share our findings by {{followup_datetime_utc}}, or sooner given the number of nodes involved. If you'd like to work through this together on a Zoom call, just let us know a time.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "HW-01",
+      "category": "Hardware Health Check Failure",
+      "title": "Data disk must be proactively replaced / disk missing",
+      "alert_signatures": [
+        "'DATA Disk /dev/sdX must be proactively replaced'",
+        "'Disk /dev/sdX is missing and must be replaced'",
+        "Disk status READY_TO_REMOVE / PRE_REMOVAL"
+      ],
+      "internal_investigation": [
+        "hw_health.sh across all nodes",
+        "rubrik_tool.py get_disks_stats – disk status and serial",
+        "After swap: setup_disk, turn off LEDs, re-run hw_health"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a Hardware Health Check Failure on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Hardware Health Check Failure — DATA Disk {{disk}} requires proactive replacement\n\nBusiness Impact: Data disk {{disk}} on node {{node_id}} has been flagged for proactive replacement because of detected errors. The cluster continues to operate normally. However, leaving a degrading disk in place increases the risk of an unexpected disk failure and reduces the cluster's resiliency until it is replaced.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nOnce I have access, I will review the node's hardware health to confirm the fault and arrange a replacement if needed. I will share an update by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "initial_response_tunnel_already_open": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a Hardware Health Check Failure on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Hardware Health Check Failure — DATA Disk {{disk}} requires proactive replacement\n\nBusiness Impact: Data disk {{disk}} on node {{node_id}} has been flagged for proactive replacement because of detected errors. Leaving a degrading disk in place increases the risk of an unexpected disk failure.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nThe support tunnel is already open on this cluster, so we are reviewing the disk's health now to confirm the fault.\n\nIf a replacement is confirmed, we will arrange a new disk to be shipped to you. To avoid any delay, could you please share the following shipping details?\n\nShip To Contact Name:\nShip To Email:\nShip To Phone Number:\nShipping Street:\nShipping City:\nShipping State/Province:\nShipping Zip/Postal Code:\nShipping Country:\n\nWe will share our findings and next steps by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "post_replacement_update": "Hello {{contact_name_or_Team}},\n\nThank you for the update.\n\nI have logged into the cluster and confirmed that the new drive has been set up on node {{node_id}}. A health check across all nodes shows all hardware components are healthy, and all disk and node LEDs have been turned off.\n\nNo further action is required at this time. We will continue to monitor the cluster, and if it remains stable, could you please confirm whether we can proceed to close this case?\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Hardware Health Check Failure on cluster {{cluster_tag}}, with data disk {{disk}} (serial {{disk_serial}}) on node {{node_id}} flagged for replacement.\n\nRoot Cause:\nThe disk accumulated enough errors to cross the hardware health threshold, so it was flagged for proactive replacement to prevent an unplanned failure.\n\nResolution Steps:\n\n* Confirmed via hardware health checks that disk {{disk}} required replacement.\n* Raised {{rma_number}} and shipped the replacement drive (serial {{new_serial}}).\n* After you installed the drive, set it up on node {{node_id}} as an active data disk.\n* Ran a hardware health check across all nodes – all components healthy.\n* Monitored the cluster after the replacement – no new alerts.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "resolution_details_example": "Data disk {{disk}} on node {{node_id}} was flagged for proactive replacement due to errors. We shipped a replacement via RMA, set up the new drive after the customer installed it, and confirmed all hardware is healthy."
+    },
+    {
+      "id": "HW-02",
+      "category": "Hardware Health Check Failure",
+      "title": "Multiple disks missing → power cycle → reseat → node/chassis/PSU replacement",
+      "alert_signatures": [
+        "hw_health: 'has 2 drives, 5 drives are required'",
+        "Several disks MISSING on one node"
+      ],
+      "internal_investigation": [
+        "Power cycle (approval) → reseat node, SAS cables, disks → IPMI power on",
+        "If node won't power on → node RMA",
+        "If drives can't be set up on the new node → chassis/SAS connectors",
+        "After chassis swap check PSUs"
+      ],
+      "templates": {
+        "power_cycle_request": "Hello {{contact_name_or_Team}},\n\nUsing the support tunnel, I have logged into the cluster and found that {{n}} disks on node {{node_id}} are currently in a missing state. As a first troubleshooting step, we recommend power-cycling this node to see if the disks return to an active state.\n\nA power cycle requires about 15 to 20 minutes of downtime on this node, during which backup jobs and cluster operations on it will pause and then resume once the node is healthy.\n\nCould you please confirm if we can proceed, and whether there are specific non-backup hours you would prefer?\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "reseat_request": "Hello {{contact_name_or_Team}},\n\nThank you for approving the power cycle. We power-cycled node {{node_id}}; however, the disks are still reporting as missing.\n\nWhen a power cycle does not bring the disks back, the cause is usually a loose or degraded connection between the drives and the node's disk controller rather than the drives themselves. Could you please:\n\n1. Reseat node {{node_id}} along with its SAS controller/cable connections.\n2. Reseat each affected disk (remove it, wait about 15 seconds, then reinsert).\n\nWe're happy to walk through this together over a Zoom session if that would help.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Hardware Health Check Failure on cluster {{cluster_tag}}, with disks on node {{node_id}} reported missing, which led to a set of related hardware issues.\n\nRoot Cause:\n{{cascade_summary}}\n\nResolution Steps:\n\n* Investigated the missing disks and confirmed a hardware failure after a power cycle and physical reseat did not restore them.\n* {{rma_steps}}\n* Confirmed via hardware health checks that all components are healthy and both PSUs are detected.\n* Monitored the cluster after the final replacement – no new alerts.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "HW-03",
+      "category": "Hardware Health Check Failure",
+      "title": "Node unreachable / node hardware failure (node RMA)",
+      "alert_signatures": [
+        "Node OK (STALE) and cannot SSH / ping",
+        "IPMI unreachable or chassis power reverts to off",
+        "Power cycle and reseat don't help"
+      ],
+      "internal_investigation": [
+        "Check IPMI reachability and power status",
+        "After replacement: confirm node discoverable, LACP/VLAN config, logical node replacement job"
+      ],
+      "templates": {
+        "physical_power_cycle_request": "Hello {{contact_name_or_Team}},\n\nI have logged into the cluster and confirmed that node {{node_id}} is in a stale state and cannot be reached over the network or its management (IPMI) interface.\n\nCould you please have someone on-site perform a hard power cycle (press and hold the power button until the node turns off, then power it back on)? If the node does not come back, please reseat it: power off, remove all cables, pull the node out, wait about 15 seconds, reinsert, reconnect cables, and power on.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "rma_shipping_request": "Hello {{contact_name_or_Team}},\n\nThank you for the update. Since the node did not recover after the power cycle and reseat, it needs to be replaced. Could you please share the following shipping details so we can send a replacement node?\n\nShip To Contact Name:\nShip To Email:\nShip To Phone Number:\nShipping Street:\nShipping City:\nShipping State/Province:\nShipping Zip/Postal Code:\nShipping Country:\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Node Stale/Bad alert on cluster {{cluster_tag}}, with node {{node_id}} unreachable over SSH and IPMI. A physical power cycle and reseat did not restore it, confirming a node-level hardware failure.\n\nRoot Cause:\nNode {{node_id}} failed at the hardware level and could not be recovered through remote troubleshooting, power cycling, or reseating.\n\nResolution Steps:\n\n* Confirmed the node was unreachable even after a physical power cycle and reseat.\n* Raised {{rma_number}} and shipped a replacement node.\n* Coordinated the on-site replacement [with a Field Engineer] and completed the setup of the new node in the cluster.\n* Monitored the cluster for 24 hours after the replacement – no further alerts, and all nodes are healthy.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "HW-04",
+      "category": "Hardware Health Check Failure",
+      "title": "Memory DIMM missing",
+      "alert_signatures": [
+        "'Memory DIMM P1-DIMMxx is missing and must be replaced'"
+      ],
+      "internal_investigation": [
+        "Confirm DIMM slots via hw_health / ipmitool sdr type Memory",
+        "Dell: request TSR (SupportAssist) from iDRAC; HPE: request AHS",
+        "Open vendor case or Rubrik RMA as applicable"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a Hardware Health Check Failure on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Hardware Health Check Failure — Memory DIMM(s) Missing\n\nBusiness Impact: Node {{node_id}} is reporting memory DIMM(s) {{dimm_list}} as missing and requiring replacement. While the node may continue to operate with reduced memory, leaving this unaddressed increases the risk of performance degradation or further hardware issues.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nOnce I have access, I will review the node's memory health to confirm the missing DIMM(s) and arrange a replacement as needed. I will share an update by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "vendor_log_request": "Hello {{contact_name_or_Team}},\n\nI have logged into the cluster and validated the alert. Memory DIMM {{dimm}} on node {{node_id}} is reported as missing and needs to be replaced. The node is still running, but with less memory, which raises the risk of slower performance or further hardware problems.\n\nTo get the replacement started, could you please share the [TSR (SupportAssist Collection) logs from the node's iDRAC / AHS logs from the node's iLO]? [Dell/HPE] needs these logs to confirm the fault and send the replacement part. Once we have them, we will open a case with [Dell/HPE] and keep you posted.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "HW-05",
+      "category": "Hardware Health Check Failure",
+      "title": "Power supply AC lost / PSU fault",
+      "alert_signatures": [
+        "'PSx's AC cord and/or AC circuit must be checked'",
+        "ipmitool: 'Power Supply AC lost', 'Redundancy Lost'",
+        "Stale SEL entries keep hw_health reporting 'Node must be replaced. PS1 PG FAIL' after the PSU is fixed"
+      ],
+      "internal_investigation": [
+        "ipmitool sdr type 'Power Supply' on all nodes",
+        "If the same PS on many nodes → PDU/circuit",
+        "After fix: if alert persists from old SEL entries, back up SEL and clear it (with approval)"
+      ],
+      "root_cause_customer_language": "The power supply itself is healthy but is not receiving power from its cable – usually a loose cable, a PDU problem, or a circuit/power event at the site.",
+      "templates": {
+        "initial_response_checks": "Hello {{contact_name_or_Team}},\n\nUpon reviewing the cluster, we identified that Power Supply {{ps}} is not receiving power and is reporting a 'Power Supply AC Lost' status on the following node(s):\n\n{{node_list}}\n\nWhile all nodes remain operational, a sustained loss of power to this supply removes power redundancy – if the other supply were also to lose power, these nodes could go down.\n\nCould you please have someone on-site check:\n\n* Connections – that the {{ps}} power cables are firmly seated at both the node and the PDU.\n* Power source – that the circuit or PDU feeding these supplies is active.\n* Reseat – if the source is active, unplug and firmly reconnect the {{ps}} cables.\n\nIf the cables and power source are fine but the error persists, we will arrange a replacement power supply.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "sel_clear_approval": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. I have checked node {{node_id}}: both power supplies are now working and fully redundant. However, the hardware health check still shows an alert because of old entries in the node's hardware event log (SEL).\n\nTo clear this, could you confirm if we can save a backup of the current event log and then clear it? This does not require any downtime.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOn {{date}}, our proactive monitoring detected a power supply alert on node(s) {{node_list}} in cluster {{cluster_tag}}.\n\nRoot Cause:\nThe alert means the power supply is healthy but is not receiving power from its cable. [Because it appeared on the same supply across several nodes at the same time, it points to a temporary interruption on the PDU or circuit, not a fault in the Rubrik hardware.] [The faulty power supply on node {{node_id}} was replaced.]\n\nResolution Steps:\n\n* Reviewed the alerts and confirmed which power supplies were affected.\n* [Power was restored / the faulty PSU was replaced / old event log entries were backed up and cleared with your approval.]\n* Confirmed all nodes have both power supplies working and fully redundant.\n* Monitored the cluster – no further alerts.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "resolution_details_example": "Power supply {{ps}} on node(s) {{node_list}} briefly lost input power, most likely from a PDU or circuit interruption. Power has been restored, the alerts cleared, and all nodes have both power supplies working."
+    },
+    {
+      "id": "HW-06",
+      "category": "Hardware Health Check Failure",
+      "title": "IERR – node must be replaced",
+      "alert_signatures": [
+        "'Node must be replaced. IERR reports a problem.'"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a Hardware Health Check Failure on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Hardware Health Check Failure — Node Replacement Required (IERR)\n\nBusiness Impact: Node {{node_id}} is reporting an internal error (IERR), which typically indicates a CPU, memory, or motherboard-level fault that requires the node to be replaced. While the node may continue to operate, an unaddressed IERR increases the risk of an unplanned node failure.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nOnce I have access, I will review the node's hardware logs to confirm the IERR and determine next steps, including arranging a replacement if required. I will share an update by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "HW-07",
+      "category": "Hardware Health Check Failure",
+      "title": "High inlet / CPU temperature",
+      "alert_signatures": [
+        "Inlet temperature far above normal (e.g. 49°C)",
+        "CPU thermal events on dense nodes"
+      ],
+      "templates": {
+        "update_airflow_and_bios": "Hello {{contact_name_or_Team}},\n\nThis is an update for case {{case_id}}.\n\nUsing the support tunnel, I validated the temperature alert. The current inlet temperature is {{temp}}°C, which is well above the acceptable range. Could your datacenter team please check:\n\n* Missing blanking panels between units, which let hot air recirculate\n* Cable management blocking airflow through the nodes\n* Hot aisle / cold aisle containment gaps\n* Solid front rack doors – please remove them if present, as they restrict cold air intake\n\nIn parallel, our hardware team recommends updating the BIOS on the affected nodes from {{current_bios}} to {{target_bios}} as an initial mitigation. This requires a maintenance window with downtime on the nodes involved. Could you please confirm your approval and a suitable window?\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "CAP-01",
+      "category": "Partition Capacity",
+      "title": "Log partition capacity low",
+      "alert_signatures": [
+        "'logs_partition_disk_space: X is less than or equal to threshold. Critical: 5, Warning: 10'"
+      ],
+      "internal_investigation": [
+        "df -h /var/log on all nodes",
+        "Find large/old log directories (job-fetcher, cockroach_backup_tool, etc.)",
+        "Check if a retention cron exists",
+        "Note: can block CDM upgrade pre-check (log partition storage)"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a Log Partition Capacity alert on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: Log Partition Capacity — Disk Space Low\n\nBusiness Impact: The log partition on node {{node_id}} is reporting only {{free_pct}}% free space, which has crossed the warning threshold of 10%. If it continues to fill, it can affect node stability and block CDM upgrade pre-checks.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nOnce I have access, I will review the log partition usage, identify any unusually large log files, and clear them as needed to restore headroom. I will share an update by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "cleanup_approval": "Hello {{contact_name_or_Team}},\n\nThank you for the tunnel. We found that the log partition on node {{node_id}} is filling up because older {{log_type}} logs are not being removed.\n\nTo restore headroom, we would like to remove older, non-essential log files [and add a scheduled cleanup that deletes these logs after {{retention_days}} days so it doesn't happen again]. This is low risk, does not affect running backups or restores, and needs no downtime. Could you please confirm we can proceed?\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected a Log Partition Capacity alert on node {{node_id}} in cluster {{cluster_tag}}, with only {{free_pct}}% free space. [This was also blocking your CDM upgrade at the log partition pre-check.]\n\nRoot Cause:\n{{log_type}} logs on the node were not being cleaned up automatically and accumulated over time, filling the log partition.\n\nResolution Steps:\n\n* Identified {{log_type}} logs as the main contributor to log partition growth.\n* With your approval, removed older log files [and configured a scheduled cleanup to delete them after {{retention_days}} days].\n* Confirmed partition usage returned to a healthy level [and the upgrade pre-check now passes].\n* Monitored the partition after the fix – usage is stable with no further alerts.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "CAP-02",
+      "category": "Partition Capacity",
+      "title": "OS (root) partition capacity low",
+      "alert_signatures": [
+        "'rubrik_root_os_partition_disk_space: X is less than or equal to threshold. Critical: 2, Warning: 5'"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected an OS Partition Capacity alert on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: OS Partition Capacity — Disk Space Low\n\nBusiness Impact: The OS (root) partition on node {{node_id}} is reporting only {{free_pct}}% free space, which has crossed the warning threshold of 5%. If it continues to grow toward the critical threshold of 2%, it could affect node stability and cluster operations. [Single-node cluster: this would affect all backup and restore operations.]\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nOnce I have access, I will review the OS partition usage, identify any unusually large files or logs, and clear them as needed. I will share an update by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "recurring_concern_ack": "Hello {{contact_name_or_Team}},\n\nWe understand your concern about the OS partition on this node filling up repeatedly. If it keeps happening, the node can become unstable and needs manual cleanup each time, so we want a lasting fix rather than repeated clearing.\n\nWe are now looking at which files keep filling the partition, why they aren't cleaned up automatically, and whether a configuration change or known fix would stop it. In the meantime, if the partition gets close to full again, we will clear space so the node stays stable.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "CAP-03",
+      "category": "Disk / Filesystem",
+      "title": "ReadOnlyFileSystem – disk permanently failed",
+      "alert_signatures": [
+        "'Repair of Disk ... failed. Marking permanently FAILED.'",
+        "roCounter > 0, permanentFailure:true"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected a ReadOnlyFileSystem alert on your Rubrik cluster, and I would like to investigate the alert and assist further:\n\n===========\nDescription: ReadOnlyFileSystem — Disk Permanently Failed\n\nBusiness Impact: Disk {{disk}} on node {{node_id}} has been marked permanently FAILED after a repair attempt was unsuccessful, causing the filesystem to become read-only. This can prevent backup jobs on this node from completing and reduces the cluster's backup and recovery capacity until the disk is replaced.\n\nCase ID: {{case_id}}\n\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nNode: {{node_id}}\nIncident Time (UTC): {{incident_time_utc}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nI will share my findings and a recommended action plan by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      },
+      "notes": [
+        "If the customer never responds, use PROC-01 and do not claim the disk was replaced – say we could not inspect it without the tunnel."
+      ]
+    },
+    {
+      "id": "INS-01",
+      "category": "Proactive Insight",
+      "title": "VMware backups failing – fingerprint mismatch (code defect)",
+      "alert_signatures": [
+        "Insight: 'One or more VMware backups job failing due to fingerprint mismatch'"
+      ],
+      "internal_investigation": [
+        "Check CREATE_VMWARE_SNAPSHOT job instances FAILED vs SUCCEEDED",
+        "Insight may still match for ~48 h after jobs recover"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has identified that one or more VMware backup jobs on cluster {{cluster_tag}} are intermittently failing due to a fingerprint mismatch during snapshot data verification:\n\n===========\nDetails: In some CDM versions, one or more VMware backup jobs can fail due to a code change.\n\nCause: A code bug can cause one or more VMware backup jobs to fail intermittently, with the next successful backup running as a full backup. The issue has been resolved in a later release. There is no compliance issue, as the next job completes successfully. However, we recommend upgrading, since the resulting full backup takes longer to complete.\n\nFix: This issue is fixed in CDM version {{fixed_version}} and above. Please refer to the KB article below for upgrade steps:\nhttps://support.rubrik.com/s/article/000001297\n\nCase ID: {{case_id}}\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nCurrent Software Version: {{cdm_version}}\n===========\n\nCould you please let us know if you would like to proceed with the upgrade [or enable the support tunnel so we can review the affected jobs]? We're happy to help plan the upgrade window.\n\nI will follow up by {{followup_datetime_utc}}, or sooner if we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure_no_issue": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring flagged cluster {{cluster_tag}} for a known defect that can intermittently cause VMware backup jobs to fail during snapshot data verification.\n\nRoot Cause:\nUpon investigation via the support tunnel, we confirmed there are no currently failing VMware backup jobs – all recent snapshot jobs completed successfully. The insight had matched based on historical data and cleared after the automated refresh.\n\nResolution Steps:\n\n* Reviewed VMware snapshot job history and confirmed no active or recent failures.\n* Verified all recent snapshot jobs completed successfully.\n* Monitored the cluster for 48 hours to confirm the insight cleared with no new failures.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "INS-02",
+      "category": "Proactive Insight",
+      "title": "HyperV VM backups failing – corrupt RCT data (fixed in 7.0.2)",
+      "alert_signatures": [
+        "Insight: 'One or more HyperV VM backups failing'"
+      ],
+      "templates": {
+        "closure_noise_fixed_version": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring flagged cluster {{cluster_tag}} for a known issue affecting HyperV VM backups on CDM versions before 7.0.2, where failures from corrupt RCT data required support intervention to run the next backup as a full.\n\nRoot Cause:\nWe confirmed the cluster is already running a fixed CDM version, and the issue signature no longer matches. [Recent backup failures you observed were reviewed separately and are unrelated.]\n\nResolution Steps:\n\n* Validated that the cluster version includes the fix for this issue.\n* [Reviewed recent backup failures with your team and confirmed they are unrelated.]\n* [Opened case {{new_case}} to track a separate issue found during the review.]\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    },
+    {
+      "id": "INS-03",
+      "category": "Proactive Insight",
+      "title": "Archival upload jobs stuck after CDM 9.6.0 upgrade",
+      "alert_signatures": [
+        "Insight: 'Archival upload jobs stuck after CDM upgrade'",
+        "PARALLELIZED_UPLOAD in UNDOING / CANCELING loop",
+        "Missing archivalShardedGroupId"
+      ],
+      "internal_investigation": [
+        "List PARALLELIZED_UPLOAD UNDOING jobs and stuck child PARALLELIZED_PREPARE_SUBGROUP_UPLOAD",
+        "Run remediation script dry run → apply → re-scan (AFFECTED = 0)"
+      ],
+      "templates": {
+        "initial_response": "Hello {{contact_name_or_Team}},\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has identified that one or more archival upload jobs on your cluster have become stuck following the recent CDM upgrade to 9.6.0:\n\n===========\nDescription: Archival upload jobs stuck after CDM upgrade\n\nBusiness Impact: Stuck archival jobs hold cluster resources and can prevent new archival uploads from completing, which may delay copies of your data reaching the archival location.\n\nCause: The upgrade changed how some archival job tracking information is stored. Jobs already in progress at the time of the upgrade don't have this new information, so they keep retrying without completing.\n\nFix: We will run a remediation script that corrects the affected job records so the stuck jobs complete and release their resources. It is a live metadata update and needs no reboot or service interruption.\n\nCase ID: {{case_id}}\nCluster UUID: {{cluster_uuid}}\nCluster Tag: {{cluster_tag}}\nSoftware Version: {{cdm_version}}\n===========\n\nCould you please enable the support tunnel for the cluster so we can apply the fix?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nOnce I have access, I will confirm the affected jobs, share the planned steps for your approval, and verify that archival uploads resume normally. I will share an update by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+        "closure": "Hello {{contact_name}},\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nAfter the CDM upgrade to 9.6.0 on cluster {{cluster_tag}}, one or more archival upload jobs became stuck in a retry loop, preventing new archival uploads from completing.\n\nRoot Cause:\nThe upgrade changed how archival job tracking information is stored. Jobs already running at upgrade time were missing the new information, so they could not complete and kept holding resources.\n\nResolution Steps:\n\n* Confirmed the stuck archival job via the support tunnel.\n* With your approval, ran the remediation script to correct the affected job record as a live update with no downtime.\n* Re-scanned and confirmed no further affected job records remain.\n* Confirmed the held resources were released and archival uploads resumed normally.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+      }
+    }
+  ],
+  "process_templates": [
+    {
+      "id": "PROC-01",
+      "title": "Ghosted closure (3+ follow-ups, no response)",
+      "template": "Hello Team,\n\nThank you for your patience while we followed up on this alert.\n\nProblem Summary:\n{{problem_summary}}\n\nOutreach Summary:\nBetween {{first_outreach_date}} and {{last_outreach_date}}, we sent several emails [and called {{phone_numbers}}] asking for {{ask}}, but we were unable to reach your team.\n\nCurrent Status:\n{{current_status}} [If not verified: Without tunnel access, we were not able to check {{item}} directly.]\n\nNext Steps:\n\n* If {{condition}}, please reply to this thread and enable the support tunnel, and we will pick this up right away.\n* If any new alerts are triggered on this cluster, we will reach out to you.\n\nAs we have not received a response and the cluster is currently stable, we are proceeding to close this case. You can reopen it at any time by replying to this email.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-02",
+      "title": "Duplicate case closure",
+      "template": "Hello Team,\n\nGreetings!\n\nAs the alert triggered on this node is already being actively handled under case {{original_case}}, we are marking this case as a duplicate and proceeding to close it.\n\nPlease refer to case {{original_case}} for further updates. If you have any questions, feel free to reach out.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-03",
+      "title": "Snooze request (test/maintenance cluster)",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. We are glad to hear everything is good on your end.\n\nSince this is a test cluster and maintenance activity regularly triggers this alert, could you please confirm if we can snooze this alert type to reduce noise cases going forward?\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-04",
+      "title": "Snooze confirmation",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation.\n\nAs requested, we will snooze the {{alert_type}} alerts for node {{node_id}} on cluster {{cluster_tag}} for {{duration}}. While the alerts are snoozed, our proactive monitoring will not open new cases for this alert on this node, so a real problem during this time would not be notified automatically.\n\nCould you please confirm the snooze period you'd like? If we don't hear back by {{followup_datetime_utc}}, we will apply the period above and close this case. You can contact us at any time to turn the alerts back on.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+      "notes": "If approval came from a third-party SOC/MSSP, consider copying the cluster owner."
+    },
+    {
+      "id": "PROC-05",
+      "title": "Place case on hold for monitoring",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. As requested, we will place this case on hold for {{hold_period}} to allow time for {{reason}}, and will follow up by {{hold_end_datetime_utc}}, or sooner if you have findings to share.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-06",
+      "title": "Ask how to proceed (hold or close)",
+      "template": "Hello {{contact_name_or_Team}},\n\nThanks for the update. As the cluster is currently confirmed healthy with no further alerts observed, could you please let us know whether you'd like us to keep this case on hold or close it for now?\n\nIf we don't hear back, we will follow up again by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-07",
+      "title": "Monitoring update + request to close",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the update.\n\n{{what_was_done_and_validated}}\n\nNo further action is required at this time. We will continue to actively monitor the cluster and provide a status update by {{followup_datetime_utc}}, or sooner if any additional alerts are triggered.\n\nIf the cluster remains stable, could you please confirm whether we can proceed to close this case?\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-08",
+      "title": "Short summary requesting closure",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for your help.\n\nHere is a short summary of this case:\n\n* {{summary_point_1}}\n* {{summary_point_2}}\n* {{summary_point_3}}\n\nSince the cluster is healthy, could you please confirm if we can close this case? If we don't hear back, we will follow up by {{followup_datetime_utc}}.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-09",
+      "title": "Customer confirmed – closing",
+      "template": "Hello Team,\n\nThank you for the confirmation. With the cluster confirmed healthy and no further alerts observed, we will proceed to close this case. If any new alerts are triggered, please reach out and we will be happy to assist.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-10",
+      "title": "Tunnel follow-up (no response to IR)",
+      "template": "Hello {{contact_name_or_Team}},\n\nThis is a follow-up on case {{case_id}}.\n\nOur proactive monitoring detected {{alert_summary}} on node {{node_id}} in cluster {{cluster_tag}}, which has since recovered. We haven't yet received a response to our earlier request.\n\nCould you please enable the support tunnel and share the port number so we can review the node and cluster status?\nApp Tray → Settings → Customer Support → Support Tunnel\n\nWhile the node has recovered, if this recurs it could affect workloads running on or protected by this node, so we'd like to complete our investigation.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-11",
+      "title": "Tunnel not accessible – reopen",
+      "template": "Hello {{contact_name_or_Team}},\n\nFollowing up on the proactive alert for cluster {{cluster_tag}} (node {{node_id}}). We tried to access the support tunnel, but the connection failed with the following error:\n\n\"{{tunnel_error}}\"\n\nCould you please close the current support tunnel, open a fresh one, and share the updated port details with us? Additionally, could you confirm whether any planned or unplanned maintenance was performed at the site around this time?\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-12",
+      "title": "Tunnel enabled – investigating",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for enabling the support tunnel.\n\nI have logged into the cluster and confirmed that {{current_state}}. Next, we will review the logs around the incident time to find out what triggered the alert and whether there is any risk of it happening again.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-13",
+      "title": "Shipping details request (RMA)",
+      "template": "Hello {{contact_name_or_Team}},\n\nI have logged into the cluster and confirmed that {{component}} on node {{node_id}} needs to be replaced. Could you please share the following details so we can ship the replacement?\n\nShip To Contact Name:\nShip To Email:\nShip To Phone Number:\nShipping Street:\nShipping City:\nShipping State/Province:\nShipping Zip/Postal Code:\nShipping Country:\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-14",
+      "title": "Part delivered – who will replace?",
+      "template": "Hello {{contact_name_or_Team}},\n\nThis is a follow-up on case {{case_id}}. The tracking details show the replacement part was delivered on {{delivery_date}}.\n\nCould you please let us know whether you will perform the replacement yourself or would like us to schedule a Field Engineer? If you need a Field Engineer, please share a convenient date and time – we need at least 24 hours' notice. The replacement steps are here: {{kb_link}}\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-15",
+      "title": "Vendor part delivered – confirm and schedule",
+      "template": "Hello {{contact_name_or_Team}},\n\nThis is a follow-up on case {{case_id}}. The {{vendor}} team has confirmed the replacement part was delivered to your site. Could you please confirm you received it, and let us know when you plan to do the replacement? Once we know the time, we can make sure an engineer is available to check the node's health right after.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-16",
+      "title": "Customer will replace on a given date",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the update. We understand the part is expected on {{arrival_date}} and your team will replace it on {{replacement_dates}}. Please let us know once the replacement is complete, and we will check the node's health and confirm the cluster is stable. If you'd like a Rubrik engineer on a Zoom call during the replacement, just share the time.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik",
+      "notes": "Set the follow-up to one day after the latest replacement date the customer gave."
+    },
+    {
+      "id": "PROC-17",
+      "title": "Field Engineer scheduling request",
+      "template": "Hello {{contact_name_or_Team}},\n\nCould you please let us know your preferred date and time for the Field Engineer to carry out the replacement? Replacing the part soon will restore the node to full health and reduce the risk of further issues.\n\nWe need at least 24 hours' advance notice to schedule an engineer. If a site access ticket or special instructions are required, please share them with us.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-18",
+      "title": "Smart Hands eligible",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. We understand that your on-site availability is limited.\n\nYou are eligible for our Smart Hands service, so we can schedule a Field Engineer to perform the replacement on your behalf. Please share a convenient date and time for the first visit – we need at least 24 hours' advance notice.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-19",
+      "title": "Field Engineer details",
+      "template": "Hello Team,\n\nPlease find the Field Engineer details below:\n\nName: {{fe_name}}\nEmail: {{fe_email}}\nPhone: {{fe_phone}}\n\nPlease generate a site access ticket if required and share it with us, along with any special instructions the engineer will need on arrival.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-20",
+      "title": "Checking FE availability with logistics",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the update. I am checking with our logistics team on Field Engineer {{fe_name}}'s availability for the on-site replacement.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-21",
+      "title": "Vendor case opened (HPE/Dell)",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the details. I have opened a case with {{vendor}} [case number {{vendor_case}}] and uploaded the {{log_type}} logs and your shipping details. {{vendor}} will use the logs to confirm the fault and ship the replacement part.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-22",
+      "title": "Zoom scheduled",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. I have scheduled a Zoom meeting for {{date}} at {{local_time}} ({{utc_time}} UTC):\n\n{{zoom_link}}\n\nOn the call, we will {{agenda}} and confirm the cluster is healthy afterwards. If the time no longer works, please let us know and we will reschedule.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-23",
+      "title": "Approval received – proceeding",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. We will now proceed with {{activity}}. Once it's done, we will check the cluster's health and confirm everything is working normally.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-24",
+      "title": "Approval received – short update within hours",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. We will update you on the progress within the next {{hours}} hours.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-25",
+      "title": "Customer to keep us posted on replacement",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the confirmation. Please keep us updated once the replacement is complete. Once we hear back, we will run health checks on the cluster and confirm it is stable.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-26",
+      "title": "Escalation / recurring-issue acknowledgement",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the update. We understand your concern about {{recurring_issue}}. We are looking into this and will share a detailed RCA, along with recommendations to stop it from happening again, by {{followup_datetime_utc}}.\n\nPlease keep the support tunnel enabled so we can review the logs on the affected nodes.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-27",
+      "title": "Information request for an error (e.g. ISO download)",
+      "template": "Hello {{contact_name_or_Team}},\n\nThank you for the follow-up. So we can work out why {{action}} is failing, could you please share:\n\n* The exact error message, or a screenshot\n* Where you are doing this from (e.g. the Rubrik Support Portal) and which browser\n* Whether it fails right away or partway through\n\nOnce we have these details, we will find the cause and either fix it or give you another way forward.\n\nI will share an update by {{followup_datetime_utc}}, or sooner once we hear back from you.\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    },
+    {
+      "id": "PROC-28",
+      "title": "Investigation summary sent by a teammate (update format)",
+      "template": "Hello {{contact_name_or_Team}},\n\nPlease find below a summary for case {{case_id}}:\n\n{{plain_language_summary}}\n\nSince the issue appears to be resolved, could you please confirm whether we can proceed to close this case?\n\nPlease note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.\n\nThanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik"
+    }
+  ],
+  "fill_in_reference": {
+    "{{contact_name}}": "First name of the customer contact who replied last (use 'Team' if none).",
+    "{{contact_name_or_Team}}": "Contact first name, or 'Team'.",
+    "{{case_id}}": "Salesforce case number.",
+    "{{cluster_uuid}} / {{cluster_tag}} / {{node_id}}": "From the alert description.",
+    "{{incident_time_utc}}": "From the alert description, UTC.",
+    "{{bad_time_utc}} / {{revived_time_utc}}": "From node-status-history, UTC.",
+    "{{followup_datetime_utc}}": "Default: today + 2 days, 12:00 PM UTC (e.g. 'October 7, 2026, 12:00 PM UTC').",
+    "{{rma_number}}": "e.g. RMA-00XXXXX from the Netsuite shipment comment."
+  }
+}

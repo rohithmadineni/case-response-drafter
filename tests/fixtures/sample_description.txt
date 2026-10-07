@@ -1,0 +1,9 @@
+The automated alert processing system at Rubrik has detected a possible issue on your Rubrik cluster.
+
+Summary of Alert:
+Description: NodeBad: 4 is greater than or equal to threshold. Critical: 0, Warning: -18
+Cluster UUID: 00000000-1111-2222-3333-444444444444
+Cluster Tag: ACME-PROD-01
+Node: RVMHM000S000001
+Alert Customer: AcmeCorp
+Incident Time (UTC): 2026-09-29 02:54:30

@@ -1,0 +1,26 @@
+Query returned 5 records:
+
+Record 1:
+    CommentBody: From: support@rubrik.com<br>To: it-team@acme.example<br>Cc: rohith.rohith@rubrik.com<br><br>Hello Team,<br/>&nbsp;<br/>Our proactive monitoring system has detected a Node Bad alert on your Rubrik cluster. Could you please enable the support tunnel for the cluster so we can begin our investigation? I will provide you with an update on my findings by October 1, 2026, 12:00 PM UTC.<br/>Thanks and Regards,<br/>Rohith Madineni
+    CreatedDate: 2026-09-29T04:00:07.000+0000
+    CreatedBy.Name: Rohith Madineni
+
+Record 2:
+    CommentBody: Removed RVMHM000S000001 from impacted nodes
+    CreatedDate: 2026-09-29T09:00:14.000+0000
+    CreatedBy.Name: alert bot
+
+Record 3:
+    CommentBody: From: jane.doe@acme.example<br>To: support@rubrik.com<br><br>Hi Rohith, the support tunnel is open. Can you tell us why the node went down?<br><br>Regards,<br>Jane
+    CreatedDate: 2026-09-30T08:12:22.000+0000
+    CreatedBy.Name: Support Bot
+
+Record 4:
+    CommentBody: From: support@rubrik.com<br>Cc: rohith.rohith@rubrik.com<br><br>2026-09-29 02:05:18: BAD. Status stale on system startup<br/>2026-09-29 02:33:18: OK. Node revived from BAD state
+    CreatedDate: 2026-09-30T09:01:11.000+0000
+    CreatedBy.Name: Rohith Madineni
+
+Record 5:
+    CommentBody: From: support@rubrik.com<br>To: jane.doe@acme.example<br><br>Hello Jane,<br/>Thank you for enabling the tunnel. The node restarted and its status went stale during startup. Could you confirm whether any maintenance was done? I will share an update by October 2, 2026, 12:00 PM UTC.<br/>Thanks and Regards,<br/>Rohith Madineni
+    CreatedDate: 2026-09-30T09:10:00.000+0000
+    CreatedBy.Name: Rohith Madineni

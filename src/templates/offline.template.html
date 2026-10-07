@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Case Response Drafter – Offline</title>
+<style>
+:root { color-scheme: light; --bg:#f4f6f9; --card:#fff; --ink:#1d2433; --muted:#5b6475; --line:#e3e6ec; --accent:#00a37a; --accent2:#e6f6f1; --warn:#b45309; --warnbg:#fff7ed; --err:#b91c1c; --ok:#166534; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); font-size:14px; }
+header { padding:16px 20px 4px; }
+h1 { font-size:18px; margin:0; }
+.sub { color:var(--muted); font-size:12px; margin-top:2px; }
+main { padding:10px 20px 30px; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
+@media (max-width: 1000px){ main { grid-template-columns:1fr; } }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+h2 { font-size:14px; margin:0 0 8px; }
+label { display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+input, select, textarea { font:inherit; color:var(--ink); border:1px solid var(--line); border-radius:7px; padding:7px 10px; background:#fff; width:100%; }
+textarea { resize:vertical; }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
+.row > div { flex:1; min-width:160px; }
+button { font:inherit; border:0; border-radius:7px; padding:8px 14px; cursor:pointer; background:var(--accent); color:#fff; font-weight:600; }
+button.secondary { background:#eef1f5; color:var(--ink); font-weight:500; }
+button.small { padding:4px 10px; font-size:12px; }
+.tools { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; align-items:center; }
+.status { font-size:13px; color:var(--muted); margin-top:6px; }
+.status.err { color:var(--err); }
+.grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:6px 14px; }
+.kv b { display:block; font-size:11px; color:var(--muted); font-weight:500; text-transform:uppercase; letter-spacing:.03em; }
+.kv span { font-size:13px; word-break:break-word; }
+.note { font-size:12px; color:var(--muted); margin-top:6px; }
+ul.tight { margin:4px 0 0; padding-left:18px; }
+.flags { background:var(--warnbg); border:1px solid #fed7aa; border-radius:8px; padding:10px 12px; margin-top:10px; }
+.flags li { color:var(--warn); margin:3px 0; }
+.check li { margin:3px 0; list-style:none; margin-left:-18px; }
+.pass { color:var(--ok); } .fail { color:var(--err); }
+#draft { min-height:420px; line-height:1.45; }
+#resdet { min-height:60px; }
+.hidden { display:none !important; }
+.drop { border:2px dashed var(--line); border-radius:8px; padding:10px; text-align:center; color:var(--muted); font-size:12px; margin-top:8px; }
+.drop.over { border-color:var(--accent); background:var(--accent2); }
+.pill { display:inline-block; font-size:11px; padding:1px 8px; border-radius:999px; background:#eef1f5; color:var(--muted); margin-left:6px; }
+details summary { cursor:pointer; color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Case Response Drafter <span class="pill">offline</span></h1>
+  <div class="sub">Works without internet or Salesforce access. Paste or drop the case details and comment history, and it builds the summary, an IQS-compliant draft, and a checklist on your computer. Nothing leaves this page.</div>
+</header>
+<main>
+  <section class="card">
+    <h2>1. Case input</h2>
+    <div class="row">
+      <div><label for="caseNo">Case number</label><input id="caseNo" placeholder="e.g. 01335379"></div>
+      <div><label for="statusIn">Case status (optional)</label><input id="statusIn" placeholder="e.g. In Progress"></div>
+    </div>
+    <label for="subject">Subject (optional)</label>
+    <input id="subject" placeholder="[Customer] Proactive Case: (Cluster name: X) Node is Bad">
+    <label for="desc">Case description / alert details</label>
+    <textarea id="desc" rows="6" placeholder="Paste the case Description (Summary of Alert: Description / Cluster UUID / Cluster Tag / Node / Incident Time)."></textarea>
+    <label for="hist">Comment history</label>
+    <textarea id="hist" rows="12" placeholder="Paste the case comments. Accepted formats:
+• Salesforce query output (Record 1: CommentBody / CreatedDate / CreatedBy.Name)
+• A CSV export with CommentBody, CreatedDate, CreatedBy.Name columns
+• A plain email thread (each message starting with From:)"></textarea>
+    <div class="drop" id="drop">Or drop a .txt / .csv file here – <label style="display:inline;color:var(--accent);cursor:pointer;margin:0">browse<input type="file" id="file" accept=".txt,.csv,.json,.html,.htm" class="hidden"></label></div>
+    <div class="row" style="margin-top:8px">
+      <div><label for="dtype">Email type</label>
+        <select id="dtype">
+          <option value="Auto">Auto – pick from case history</option>
+          <option>Initial Response (IR)</option>
+          <option>Follow-up (no customer reply)</option>
+          <option>Update with findings</option>
+          <option>Approval request</option>
+          <option>Proceeding after approval</option>
+          <option>Hold acknowledgement</option>
+          <option>Monitoring update + request to close</option>
+          <option>Short summary requesting closure</option>
+          <option>Closure</option>
+          <option>Simple closure</option>
+          <option>Ghosted closure</option>
+          <option>Duplicate closure</option>
+        </select></div>
+      <div><label for="fudays">Follow-up in (days)</label><input id="fudays" type="number" min="1" max="14" value="2"></div>
+    </div>
+    <label for="notes">Your notes (optional – e.g. root cause, what you did, other case number)</label>
+    <textarea id="notes" rows="3" placeholder="Root cause: … / Action taken: … / Duplicate of: 0133xxxx"></textarea>
+    <div class="tools">
+      <button id="go">Build summary + draft</button>
+      <button class="secondary" id="sample">Load example</button>
+      <button class="secondary" id="clear">Clear</button>
+    </div>
+    <div class="status" id="msg"></div>
+  </section>
+
+  <section>
+    <div class="card hidden" id="sumCard">
+      <h2>2. Case summary <span class="pill" id="sumTime"></span></h2>
+      <div class="grid2" id="sumKv"></div>
+      <div id="sumBody"></div>
+      <div class="flags hidden" id="flagBox"><b style="color:var(--warn)">Check before sending</b><ul class="tight" id="flags"></ul></div>
+      <details style="margin-top:8px"><summary>Parsed comments (<span id="nComments">0</span>)</summary><div id="parsed" class="note"></div></details>
+    </div>
+
+    <div class="card hidden" id="draftCard" style="margin-top:14px">
+      <h2 id="draftTitle">3. Draft</h2>
+      <textarea id="draft"></textarea>
+      <div class="tools">
+        <button class="secondary" id="copy">Copy draft</button>
+        <button class="secondary" id="recheck">Re-check IQS</button>
+        <button class="secondary" id="download">Save as .txt</button>
+      </div>
+      <h2 style="margin-top:14px">IQS check</h2>
+      <ul class="tight check" id="iqs"></ul>
+      <div id="resWrap" class="hidden">
+        <h2 style="margin-top:14px">Resolution Details</h2>
+        <textarea id="resdet"></textarea>
+        <div class="tools"><button class="secondary" id="copyRes">Copy resolution details</button></div>
+      </div>
+      <div class="note">Review before posting. Fill any [bracketed] parts and check names and dates.</div>
+    </div>
+  </section>
+</main>
+<script>
+/*LIB*/
+</script>
+<script>
+/*OFFLINE*/
+</script>
+</body>
+</html>

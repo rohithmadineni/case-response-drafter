@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IQS Response Agent</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">IQS Response Agent</div>
+      <div class="top-actions">
+        <button id="reloadBtn" class="icon-btn" title="Re-read the case from the open Salesforce tab" aria-label="Reload case">↻</button>
+        <button id="settingsBtn" class="icon-btn" title="Settings" aria-label="Settings">⚙</button>
+      </div>
+    </header>
+
+    <section id="caseCard" class="case-card empty">
+      <div id="caseEmpty" class="case-empty">
+        <p><strong>No case loaded.</strong></p>
+        <p>Open a Salesforce case, then press <b>↻</b> – or paste the history below.</p>
+      </div>
+      <div id="caseFull" class="hidden">
+        <div class="case-line">
+          <span id="caseNo" class="case-no"></span>
+          <span id="caseStatus" class="pill"></span>
+          <span id="casePrio" class="pill pill-muted"></span>
+        </div>
+        <div id="caseSubject" class="case-subject"></div>
+        <div class="case-line small">
+          <span id="caseAccount"></span>
+          <span id="caseStage" class="pill pill-stage"></span>
+        </div>
+      </div>
+      <ul id="warnings" class="warnings hidden"></ul>
+    </section>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" data-tab="summary" aria-selected="true">Summary</button>
+      <button class="tab" role="tab" data-tab="draft" aria-selected="false">Draft</button>
+    </nav>
+
+    <main class="panes">
+      <!-- SUMMARY -->
+      <section id="pane-summary" class="pane" role="tabpanel">
+        <div id="summaryBody" class="summary-body"></div>
+
+        <details id="pasteBox" class="paste-box">
+          <summary>Paste case details instead</summary>
+          <p class="hint">Use this if the page can't be read. Accepts Salesforce query output, a CSV export, or an email thread (each message starting with <code>From:</code>).</p>
+          <div class="grid2">
+            <label>Case number<input id="pCase" type="text" placeholder="01318617" autocomplete="off"></label>
+            <label>Status<input id="pStatus" type="text" placeholder="In Progress" autocomplete="off"></label>
+          </div>
+          <label>Subject<input id="pSubject" type="text" placeholder="[Customer] Proactive Case: (Cluster name: X) Node is Bad" autocomplete="off"></label>
+          <label>Description (alert block)<textarea id="pDesc" rows="3" placeholder="Summary of Alert: …"></textarea></label>
+          <label>Comment history<textarea id="pHist" rows="5" placeholder="Paste the comments / emails here"></textarea></label>
+          <button id="usePasteBtn" class="btn">Use pasted details</button>
+        </details>
+      </section>
+
+      <!-- DRAFT -->
+      <section id="pane-draft" class="pane hidden" role="tabpanel">
+        <div class="grid2">
+          <label>Email type
+            <select id="typeSel"></select>
+          </label>
+          <label>Next update in
+            <select id="daysSel">
+              <option value="1">1 day</option>
+              <option value="2" selected>2 days (default)</option>
+              <option value="3">3 days</option>
+              <option value="5">5 days</option>
+              <option value="7">7 days</option>
+            </select>
+          </label>
+        </div>
+        <label>Notes for this email <span class="opt">(optional)</span>
+          <textarea id="notes" rows="3" placeholder="Root cause: …&#10;Action taken: …&#10;Validation: …&#10;Duplicate of: 0133…&#10;Name: / Contact: / Email: / Arrival date: / Arrival time:  (Field Engineer)"></textarea>
+        </label>
+        <div class="row">
+          <button id="genBtn" class="btn primary" disabled>Generate draft</button>
+          <span id="genHint" class="hint"></span>
+        </div>
+
+        <div id="draftOut" class="hidden">
+          <div class="draft-head">
+            <strong id="draftTitle">Draft</strong>
+            <div class="row">
+              <span id="score" class="pill"></span>
+              <button id="copyBtn" class="btn small">Copy</button>
+            </div>
+          </div>
+          <textarea id="draft" class="draft" spellcheck="true" rows="16"></textarea>
+          <ul id="iqs" class="iqs"></ul>
+          <div id="resWrap" class="hidden">
+            <div class="draft-head"><strong>Resolution Details</strong> <span class="hint">(for the case record, not the customer)</span>
+              <button id="copyResBtn" class="btn small">Copy</button></div>
+            <textarea id="resdet" rows="3"></textarea>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <!-- Settings -->
+    <div id="settings" class="settings hidden" role="dialog" aria-label="Settings">
+      <div class="settings-card">
+        <div class="draft-head"><strong>Settings</strong><button id="closeSettings" class="icon-btn" aria-label="Close">✕</button></div>
+        <label>Name used in the sign-off<input id="sigName" type="text" autocomplete="off"></label>
+        <label>Designation<input id="sigDesig" type="text" autocomplete="off"></label>
+        <div class="row">
+          <button id="saveSig" class="btn primary">Save</button>
+          <button id="resetSig" class="btn">Reset to default</button>
+        </div>
+        <hr>
+        <p class="hint">The loaded case is kept in this browser for up to 8 hours so it survives the popup closing. It never leaves your machine.</p>
+        <button id="clearBtn" class="btn danger">Clear saved case data</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="engine.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

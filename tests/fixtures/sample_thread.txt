@@ -1,0 +1,9 @@
+From: support@rubrik.com
+Sent: October 1, 2026 06:00
+Hello Team, could you please enable the support tunnel so we can investigate the alert?
+
+From: john.smith@acme.example
+Sent: October 2, 2026 08:00
+Hi Rohith, the tunnel is open now. Can you check why the node rebooted?
+Thanks,
+John

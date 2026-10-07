@@ -1,0 +1,494 @@
+/**
+ * IQS drafting engine for the extension (ported from the tested src/ logic; edit this file, not dist/).
+ * Pure functions, no network. Loaded by popup.html as a classic script; also require()-able for tests.
+ */
+const SIGN_TXT = "Thanks and Regards,\n\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik";
+const MON_TXT = "Please note that this proactive case is monitored 24×7, so feel free to reply at any time for immediate assistance.";
+const MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December";
+const STAGE_TO_TYPE = { "IR needed":"Initial Response (IR)", "Follow-up (no reply)":"Follow-up (no customer reply)", "Customer replied - respond":"Update with findings", "Approval needed":"Approval request", "Proceeding after approval":"Proceeding after approval", "Hold":"Hold acknowledgement", "Monitoring":"Monitoring update + request to close", "Ready to close":"Closure", "Ghosted close":"Ghosted closure", "Duplicate":"Duplicate closure", "Tunnel enabled":"Support tunnel enabled – starting investigation", "Shipping received":"RMA raised", "Part delivered":"Part delivered – follow-up" };
+const DRAFT_TYPES = ["Initial Response (IR)","Follow-up (no customer reply)","Support tunnel – request","Support tunnel enabled – starting investigation","Update with findings","Approval request","Proceeding after approval","Request shipping details","RMA raised","Part delivered – follow-up","Field Engineer details","Hold acknowledgement","Monitoring update + request to close","Short summary requesting closure","Closure","Closure – Resolution Summary","Simple closure","Ghosted closure","Duplicate closure"];
+
+function esc(s){ return String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+function decode(html) {
+  let t = String(html||"")
+    .replace(/<br\s*\/?>/gi,"\n").replace(/<\/(p|div|li|tr|h\d)>/gi,"\n").replace(/<li[^>]*>/gi,"• ")
+    .replace(/<[^>]+>/g,"");
+  if (typeof document !== "undefined") { const ta=document.createElement("textarea"); ta.innerHTML=t; t=ta.value; }
+  else { const ent={"&nbsp;":" ","&amp;":"&","&lt;":"<","&gt;":">","&quot;":"\"","&#39;":"'","&times;":"×"}; t=t.replace(/&#(\d+);|&[a-z]+;/gi,m=>ent[m]||(m[1]==="#"?String.fromCharCode(parseInt(m.slice(2),10)):m)); }
+  return t.replace(/ /g," ").replace(/[ \t]+\n/g,"\n").replace(/\n{3,}/g,"\n\n").trim();
+}
+
+function parseRecords(text){
+  const out=[]; if(!text) return out;
+  const parts = text.split(/\n\s*Record \d+:\s*\n/).slice(1);
+  for (const p of parts){
+    const rec={};
+    const fieldRe = /^\s{2,}(CaseNumber|Subject|Account\.Name|Status|Priority|Resolution__c|Description|CommentBody|CreatedDate|LastModifiedDate|CreatedBy\.Name|Owner\.Name): /gm;
+    const marks=[]; let m;
+    while((m=fieldRe.exec(p))) marks.push({k:m[1], i:m.index, v:m.index+m[0].length});
+    for(let i=0;i<marks.length;i++){
+      const end = i+1<marks.length ? marks[i+1].i : p.length;
+      rec[marks[i].k]=p.slice(marks[i].v,end).trim();
+    }
+    out.push(rec);
+  }
+  return out;
+}
+
+function classify(cm){
+  const body = cm.CommentBody||"";
+  const by = cm["CreatedBy.Name"]||"";
+  const from = (body.match(/From:\s*([^\s<]+)/i)||[])[1]||"";
+  const hasTo = /(^|<br>|\n)To:/i.test(body.slice(0,400));
+  if (/alert bot/i.test(by)) return "alert";
+  if (/ attached .*\(\d+(\.\d+)?\s*(KB|MB|GB)\)/i.test(body)) return "internal";
+  if (from && !/rubrik\.com/i.test(from)) return "customer";
+  if (/rubrik\.com/i.test(from) && hasTo) return "rubrik";
+  if (!from && !/support bot|alert bot|mulesoft/i.test(by) && !/^Current Status:/i.test(body)) {
+    // portal reply typed directly by a customer contact, or an internal note without headers
+    return /rksupport|rkcl|rubrik_tool|ipmitool|>>|\$ /.test(body) ? "internal" : "customer?";
+  }
+  if (/mulesoft|rmarequester/i.test(by+from)) return "rma";
+  return "internal";
+}
+
+function slim(body, kind){
+  let t = body;
+  // drop quoted earlier messages in replies
+  const cut = t.search(/\n\s*(From:\s.*\n\s*(Sent|Date|To)\s*:|De\s*:\s.*\n\s*Envoy|-{3,}\s*Original Message|On .{5,80} wrote:|Rubrik Support updated case|_{10,})/i);
+  if (cut > 120) t = t.slice(0, cut);
+  t = t.replace(/^(To|Cc|Objet|Subject)\s*:.*$/gim, "");
+  t = t.replace(/This message contains information which may be confidential[\s\S]*$/i, "");
+  t = t.replace(/Please note that this proactive case is monitored 24.?7[^\n]*/gi, "");
+  t = t.replace(/\n(Thanks and Regards|Thanks & Regards|Best Regards|Kindest Regards|Regards|Cdlt|With Best Regards|Thanks and regards)[,!.]?\s*\n[\s\S]{0,500}$/i, "\n[signature]");
+  t = t.replace(/\n{2,}/g, "\n").trim();
+  const cap = kind==="internal" ? 700 : kind==="alert" ? 350 : kind==="rma" ? 300 : 1600;
+  if (t.length > cap) t = t.slice(0, cap) + " …[trimmed]";
+  return t;
+}
+
+function utcDateStr(d){ return d.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric",timeZone:"UTC"}); }
+
+function scrub(t){
+  return String(t||"")
+    .replace(/\bdata loss\b/gi,"data impact")
+    .replace(/No data disruption to backup\/restore operations was observed\.?\s*/gi,"")
+    .replace(/\barchive (this|the) case\b/gi,"close $1 case")
+    .replace(/\*\*([^*\n]+)\*\*/g,"$1")
+    .replace(/^#{1,6}\s+/gm,"");
+}
+
+function alertType(subj){
+  let s = String(subj||"").replace(/^\[[^\]]*\]\s*/,"");
+  const m = s.match(/Proactive Case:\s*\([^)]*\)\s*(.+)$/i);
+  if (m) s = m[1]; else s = s.replace(/\s*\[[^\]]*\]\s*$/,"");
+  s = s.split(" -> ")[0].trim();
+  return s || "Other";
+}
+
+function clusterOf(subj){
+  const m = String(subj||"").match(/Cluster name:\s*([^)]+)\)/i) || String(subj||"").match(/\[([^\]]+)\]\s*$/);
+  return m ? m[1].trim() : "";
+}
+
+function plusDays(n){ const d=new Date(); return utcDateStr(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()+n))); }
+
+function facts(c, comments){
+  const d = decode(c.Description);
+  const g = re => ((d.match(re)||[])[1]||"").trim();
+  const f = {
+    caseNo: c.CaseNumber, subject: c.Subject||"", type: alertType(c.Subject),
+    alert: g(/\nDescription:\s*(.+)/i) || g(/Description:\s*(.+)/i),
+    uuid: g(/Cluster UUID\s*:\s*(.+)/i), tag: g(/Cluster (?:Tag|Name\/Tag)\s*:\s*(.+)/i) || clusterOf(c.Subject),
+    node: g(/\nNode:\s*(.+)/i), time: g(/Incident Time \(UTC\):\s*(.+)/i), version: g(/Software Version\s*:\s*(.+)/i),
+    details: g(/Details:\s*([\s\S]+?)\n\s*\n/i), cause: g(/Cause:\s*([\s\S]+?)\n\s*\n/i), fix: g(/Fix:\s*([\s\S]+?)\n\s*\n/i),
+    issue: g(/Issue Summary:\s*([\s\S]+?)\n\s*\n/i),
+    nodes: []
+  };
+  const seen = new Set();
+  (comments||[]).forEach(cm=>{ if (classify(cm)!=="alert") return; const b=decode(cm.CommentBody);
+    const n=(b.match(/\nNode:\s*(\S+)/)||[])[1], t=(b.match(/Incident Time \(UTC\):\s*(.+)/)||[])[1];
+    if(n && !seen.has(n)){ seen.add(n); f.nodes.push([n,(t||"").trim()]); } });
+  if (f.node && !seen.has(f.node)) f.nodes.unshift([f.node, f.time]);
+  f.recovered = (comments||[]).some(cm=>/Removed \S+ from impacted nodes|Node revived from BAD state/i.test(decode(cm.CommentBody)));
+  return f;
+}
+function partOf(f){
+  const a = (f.alert+" "+f.type+" "+f.subject).toLowerCase();
+  if (/dimm|memory/.test(a)) return "DIMM";
+  if (/ac cord|power supply|psu|\bps\d/.test(a)) return "power supply";
+  if (/disk|drive|hdd|ssd/.test(a)) return "disk";
+  return "";
+}
+
+function impactFor(f){
+  const a = (f.alert+" "+f.type).toLowerCase();
+  const node = f.node ? `node ${f.node}` : "the affected node";
+  const Node = node[0].toUpperCase() + node.slice(1);
+  if (/dimm/.test(a)) return `${Node} is reporting memory DIMM(s) as missing. The node may continue to operate with reduced memory, but this increases the risk of performance degradation or further hardware issues.`;
+  if (/ierr/.test(a)) return `${Node} is reporting an internal error (IERR), which typically indicates a CPU, memory, or motherboard fault. An unaddressed IERR increases the risk of an unplanned node failure.`;
+  if (/ac cord|power supply|psu|\bps\d/.test(a)) return "Loss of power redundancy on the affected node, increasing the risk of node downtime and potential disruption to backup and recovery operations if the remaining power path fails.";
+  if (/read.?only|permanently failed/.test(a)) return `A disk on ${node} has been marked permanently failed, causing the filesystem to become read-only. This can prevent backup jobs on this node from completing until the disk is replaced.`;
+  if (/disk|drive/.test(a) && /replace|missing/.test(a)) return `A disk on ${node} has been flagged for replacement. Leaving a degrading or missing disk in place increases the risk of an unexpected disk failure and reduces the cluster's resiliency until it is replaced.`;
+  if (/disk|drive/.test(a)) return "Loss of storage redundancy on the affected node, increasing the risk to cluster operations if additional failures occur before the disk is replaced.";
+  if (/os_partition|os partition/.test(a)) { const p=(f.alert.match(/:\s*([\d.]+)\s*is less/)||[])[1]; return `The OS (root) partition on ${node} is reporting only ${p||"low"}% free space, which has crossed the warning threshold of 5%. If it reaches the critical threshold of 2%, it could affect node stability and cluster operations.`; }
+  if (/logs_partition|log partition/.test(a)) { const p=(f.alert.match(/:\s*([\d.]+)\s*is less/)||[])[1]; return `The log partition on ${node} is reporting only ${p||"low"}% free space, which has crossed the warning threshold of 10%. If it continues to fill, it can affect node stability and block CDM upgrade pre-checks.`; }
+  if (/archiv|upload/.test(a)) return "Archival upload operations are queued behind stuck jobs, which can delay archival of backups to the target and increase the space held on the cluster.";
+  if (/fingerprint|vcenter|vmware|hyperv|rct/.test(a)) return "Backups of the affected virtual machines may fail or run as full backups until this is corrected, which increases backup time and storage use.";
+  const nodeAlert = /node is (bad|stale)|nodebad|nodestale/.test(a);
+  if (nodeAlert && f.nodes.length > 1) return `${f.nodes.length} nodes in the cluster have reported a bad or stale state within a short period. With several nodes affected, the cluster has reduced resiliency, and backup and restore operations on these nodes may be affected.`;
+  if (nodeAlert) return f.recovered
+    ? "The affected node was temporarily marked BAD but has since recovered to an OK state. The node is currently healthy, and no active production impact has been observed. However, if the condition recurs, it could affect workloads running on or protected by this node."
+    : "The affected node is marked BAD. No active production impact has been observed. However, if the condition persists, it could affect workloads running on or protected by this node.";
+  return "No active production impact has been confirmed at this time. However, if this condition is not addressed, it could affect backup and recovery operations on the cluster.";
+}
+
+function nextStepFor(f){
+  const a = (f.alert+" "+f.type).toLowerCase();
+  if (/ac cord|ac circuit|ac lost|power supply|psu/.test(a)) return "review the node status and the power supply health";
+  if (/dimm|ierr|disk|drive|read.?only/.test(a)) return "review the node's hardware health to confirm the fault and arrange a replacement if needed";
+  if (/partition/.test(a)) return "review the partition usage, identify any unusually large files or logs, and clear them as needed to restore headroom";
+  return "review the node status";
+}
+
+function templateDraft(dtype, c, comments){
+  const f = facts(c, comments), date = plusDays(2) + ", 12:00 PM UTC";
+  const isNode = /node is (bad|stale)/i.test(f.type) || /NodeBad|NodeStale/i.test(f.alert);
+  const multi = f.nodes.length>1;
+  const nodeLines = multi ? "Impacted Nodes and Incident Times (UTC):\n" + f.nodes.map(n=>`${n[0]} — ${n[1]}`).join("\n") : `Node: ${f.node}\nIncident Time (UTC): ${f.time}`;
+  const tunnel = "Could you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel";
+  const maint = "Could you also confirm whether any maintenance, activity, or outage occurred on the host or network side around the incident time?";
+  const descLabel = isNode ? (/stale/i.test(f.type) ? "Node Stale" : "Node Bad") + (multi ? " — multiple nodes" : "") : (f.alert && f.alert.length < 200 ? f.alert : (f.type || f.alert));
+  const intro = isNode ? (multi ? "alerts on multiple nodes" : `a ${descLabel} alert`) : (/insight|stuck|failing|fingerprint|archival|hyperv/i.test(f.type) ? null : alertIntro(f.type));
+  const type = dtype==="Auto" ? autoType(c, comments) : dtype;
+  let draft = null, label = type;
+
+  if (/Initial Response/.test(type)){
+    if (intro === null){ // proactive insight cases: use Details/Cause/Fix from the description
+      draft = `Hello Team,\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has identified an issue on cluster ${f.tag}, and I would like to walk you through our findings and next steps:\n\n===========\nDescription: ${f.type}\n\n` +
+        (f.issue ? `Issue Summary: ${f.issue}\n\n` : "") + (f.details ? `Details: ${f.details}\n\n` : "") + (f.cause ? `Cause: ${f.cause}\n\n` : "") + (f.fix ? `Fix: ${f.fix}\n\n` : "") +
+        `Case ID: ${f.caseNo}\n\nCluster UUID: ${f.uuid}\nCluster Tag: ${f.tag}` + (f.version ? `\nSoftware Version: ${f.version}` : "") + `\n===========\n\n${tunnel}\n\nOnce I have access, I will review the affected items and share an update by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+    } else {
+      draft = `Hello Team,\n\nGreetings of the day! I hope you're doing well.\n\nMy name is Rohith, and I'm from the Proactive Support Team at Rubrik.\n\nOur proactive monitoring system has detected ${intro} on your Rubrik cluster, and I would like to investigate ${multi?"these alerts":"the alert"} and assist further:\n\n===========\nDescription: ${descLabel}\n\nBusiness Impact: ${impactFor(f)}\n\nCase ID: ${f.caseNo}\n\nCluster UUID: ${f.uuid}\nCluster Tag: ${f.tag}\n${nodeLines}\n===========\n\n${tunnel}\n\n` + (isNode ? (multi ? maint.replace("around the incident time","around these times") : maint) + "\n\n" : (scenarioAsk(f) ? scenarioAsk(f) + "\n\n" : "")) + `Once I have access, I will ${nextStepFor(f)}${/ and /.test(nextStepFor(f)) ? "," : ""} and share my findings by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+    }
+  } else if (/Follow-up/.test(type)){
+    const n = rubrikSinceCustomer(comments);
+    draft = `Hello Team,\n\nGreetings of the day! I hope you're doing well.\n\nThis is ${n>=2 ? "the "+ordinal(n)+" " : "a "}follow-up on case ${f.caseNo}.\n\nOur proactive monitoring detected ${intro || "an alert"} on ${f.node ? "node "+f.node+" in " : ""}cluster ${f.tag}. We haven't yet received a response to our earlier request.\n\n${tunnel}\n\n${impactFor(f)}\n\nI will follow up again by ${date}, or sooner once we hear back from you.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  } else if (/Duplicate/.test(type)){
+    draft = `Hello Team,\n\nGreetings!\n\nAs the alert triggered on this node is already being actively handled under case [OTHER CASE NUMBER], we are marking this case as a duplicate and proceeding to close it.\n\nPlease refer to case [OTHER CASE NUMBER] for further updates. If you have any questions, feel free to reach out.\n\n${SIGN_TXT}`;
+  } else if (/Hold/.test(type)){
+    draft = `Hello Team,\n\nThank you for the confirmation. As requested, we will place this case on hold for [PERIOD] to allow time for [REASON], and will follow up by ${plusDays(7)}, 12:00 PM UTC, or sooner if you have findings to share.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  } else if (/Simple closure|^Closure/.test(type)){
+    draft = `Hello Team,\n\nThank you for your confirmation and patience while we investigated this alert.\n\nProblem Summary:\nOur proactive monitoring detected ${intro || "an alert"} on cluster ${f.tag}${f.node?`, node ${f.node}`:""}${f.time?`, at ${f.time} UTC`:""}.\n\nRoot Cause:\n[ROOT CAUSE IN PLAIN LANGUAGE]\n\nResolution Steps:\n\n* [What was investigated]\n* [What was done]\n* Confirmed the cluster is currently healthy with no further alerts.\n\nNo further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.\n\n${SIGN_TXT}`;
+  } else if (/Monitoring update/.test(type)){
+    draft = `Hello Team,\n\nThank you for the update.\n\n[What was done and validated.]\n\nNo further action is required at this time. We will continue to monitor the cluster and provide a status update by ${date}, or sooner if any additional alerts are triggered.\n\nIf the cluster remains stable, could you please confirm whether we can proceed to close this case?\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  }
+  if (!draft) return null;
+  const left = (draft.match(/\[[A-Z][A-Z \-/]+\]|\[[A-Z][a-z][^\]]{3,60}\]/g)||[]);
+  return { draft_type: label + " (instant template)", snapshot: ["Built instantly from the case details – no AI. Use AI draft for case-specific findings or if anything below needs judgment."], flags: left.length ? ["Fill in the bracketed parts before sending: " + [...new Set(left)].join(", ")] : [], draft, resolution_details: "" };
+}
+
+function alertIntro(type){
+  let t = String(type || "hardware health").trim().replace(/^([A-Z])([a-z])/, (m, a, b) => a.toLowerCase() + b).replace(/\bfailed$/i, "failure");
+  return /(alert|failure|error)$/i.test(t) ? "a " + t : "a " + t + " alert";
+}
+function scenarioAsk(f){
+  const a = (f.alert+" "+f.type).toLowerCase();
+  if (/ac cord|ac circuit|ac lost|power supply|psu/.test(a)) return "This alert is raised when the power supply and its power cable are healthy and connected, but no power is reaching the cable. This usually indicates a power outage in the data center, or that the other end of the power cable is disconnected or loose at the rack.\n\nCould you please confirm whether any activity was performed on your side, and verify the following:\n\n* The PDUs supplying power to the Brik.\n* The connection from the AC circuit to the PDU.\n* The connection from the PDU to the affected power supply on the Brik.";
+  if (/dimm/.test(a)) return "Could you please confirm whether any hardware activity or power event took place on the node around the incident time?";
+  return "";
+}
+function rubrikSinceCustomer(comments){
+  let n=0; for (let i=comments.length-1;i>=0;i--){ const k=classify(comments[i]); if (k.startsWith("customer")) break; if (k==="rubrik") n++; } return n;
+}
+
+function ordinal(n){ return n+(["th","st","nd","rd"][(n%100>10&&n%100<14)?0:(n%10<4?n%10:0)]); }
+
+function autoType(c, comments){
+  const hasRub = comments.some(x=>classify(x)==="rubrik");
+  if (!hasRub) return "Initial Response (IR)";
+  const lastCust = comments.map(classify).lastIndexOf("customer"), lastRub = comments.map(classify).lastIndexOf("rubrik");
+  if (lastRub > lastCust) return "Follow-up (no customer reply)";
+  return "Monitoring update + request to close";
+}
+
+function firstSentence(t, max){
+  t = String(t||"");
+  if (t.indexOf("{") >= 0) t = t.replace(/[^{}\n]{0,200}\{[^}]*\}/g, " ");
+  t = t.replace(/\s+/g," ").trim().replace(/^From:\s*\S+\s*/i, "").replace(/^Cc:\s*\S+\s*/i, "");
+  t = t.replace(/^(hello|hi|hey|dear|good day|greetings)[^,.!:]*[,.!:]?\s*/i,"")
+       .replace(/^(greetings( of the day)?!?|good day!?|i hope (you'?re|you are) doing well\.?|thank you( for [^.]{0,80})?\.|thanks( for [^.]{0,80})?\.)\s*/gi,"")
+       .replace(/^(greetings( of the day)?!?|i hope (you'?re|you are) doing well\.?)\s*/gi,"");
+  const m = t.match(/^(.{20,}?[.?!])(\s|$)/);
+  let s = m ? m[1] : t;
+  const w = s.split(" "); if (w.length > (max||22)) s = w.slice(0, max||22).join(" ") + "…";
+  return s;
+}
+
+function promisedDate(t){ const m = String(t).match(new RegExp("by\\s+((?:"+MONTHS+")\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}(?:,?\\s+\\d{1,2}(?::\\d{2})?\\s*(?:AM|PM)?\\s*UTC)?)","i")); return m ? m[1] : ""; }
+
+function nameFrom(cm){
+  const b = cm.CommentBody||"", by = cm["CreatedBy.Name"]||"";
+  if (by && !/support bot|alert bot|mulesoft/i.test(by) && !/rubrik/i.test(by)) return by.split(" ")[0];
+  const greet = decode(b).match(/\n\s*(?:Regards|Best Regards|Kindest Regards|Thanks|Thank you|Cdlt|KR)[,!.]?\s*\n+\s*([A-Z][a-zA-Z]+)/);
+  if (greet) return greet[1];
+  const f = b.match(/From:\s*([a-z]+)[._]/i); if (f && !/^(support|service|no|do|soc|it|storage|techops)$/i.test(f[1])) return f[1][0].toUpperCase()+f[1].slice(1);
+  return "";
+}
+
+function localSummary(c, comments){
+  const F = facts(c, comments);
+  const isAuto = cm => { const b = String(cm.CommentBody||""); return /Support Notification|pending solution acceptance|Rubrik Support updated case|customerthermometer|Gold Alert!|^From:\s*(service|do_not_reply|donotreply|noreply|cm)@/im.test(b); };
+  const kinds = comments.map(cm => { if (isAuto(cm)) return "auto"; const k = classify(cm); if (k==="rubrik" && /rksupport@|^\s*(>>|\+\+)/m.test(decode(cm.CommentBody))) return "internal"; return k; });
+  const lastIdx = k => { for (let i=kinds.length-1;i>=0;i--) if (k(kinds[i])) return i; return -1; };
+  const iCust = lastIdx(k=>k.startsWith("customer")), iRub = lastIdx(k=>k==="rubrik");
+  const fu = kinds.slice(iCust+1).filter(k=>k==="rubrik").length;
+  const S1 = {
+    alert: (F.type||"") + (F.alert ? " – " + F.alert.slice(0,140) : ""),
+    cluster: F.tag, cluster_uuid: F.uuid,
+    nodes: F.nodes.map(n=>({ node:n[0], incident_utc:n[1], note:"" })),
+    contact_name: iCust>=0 ? (nameFrom(comments[iCust]) || "Team") : "Team",
+    timeline: [], last_customer_message: {date:"",summary:""}, last_rubrik_email: {date:"",summary:"",promised_next_update:""},
+    rubrik_followups_since_last_customer_reply: fu, rubrik_customer_emails_total: kinds.filter(k=>k==="rubrik").length,
+    open_asks_to_customer: [], unanswered_customer_questions: [], evidence: [], actions_taken: [],
+    current_health: "", monitoring_or_hold_requested: "", suggested_stage: "", risks_or_flags: []
+  };
+  // timeline (customer, rubrik, rma, alert) – newest 12
+  comments.forEach((cm,i)=>{
+    const k = kinds[i]; if (k==="internal" || k==="auto") return;
+    const d = (cm.CreatedDate||"").slice(0,10), body = slim(decode(cm.CommentBody), k);
+    let who = k.startsWith("customer") ? "Customer" + (nameFrom(cm)?" ("+nameFrom(cm)+")":"") : k==="rubrik" ? "Rubrik ("+(cm["CreatedBy.Name"]||"").split(" ")[0]+")" : k==="rma" ? "RMA" : "Alert";
+    const full = decode(cm.CommentBody);
+    let what = k==="alert" ? (/Removed (\S+) from impacted nodes/i.test(full) ? "alert cleared for " + full.match(/Removed (\S+)/i)[1] : "new alert: " + ((full.match(/\nDescription:\s*([^\n]+)/)||[])[1]||"").split(" is ")[0] + ((full.match(/\nNode:\s*(\S+)/)||[])[1] ? " on " + full.match(/\nNode:\s*(\S+)/)[1] : ""))
+             : k==="rma" ? firstSentence(body.replace(/RMA shipment information\s*\[[^\]]*\]/i,""), 18) : firstSentence(body, 20);
+    if (k.startsWith("customer") && (what.length < 12 || /\|/.test(what))) what = String(body).replace(/^From:\s*\S+\s*/i,"").replace(/\s+/g," ").trim().slice(0,120);
+    S1.timeline.push(`${d} – ${who} – ${what}`);
+  });
+  S1.timeline = S1.timeline.slice(-12);
+  if (iCust>=0){ const b = slim(decode(comments[iCust].CommentBody),"customer"); S1.last_customer_message = { date:(comments[iCust].CreatedDate||"").slice(0,16).replace("T"," "), summary: b.slice(0,400) };
+    const qs = (b.match(/[^.?!\n]{8,200}\?/g)||[]).map(s=>s.trim()); if (iCust > iRub) S1.unanswered_customer_questions = qs.slice(0,3);
+    if (/\b(on hold|keep (the|this) (case|ticket) (open|on hold)|monitor (for|over) (a|one|two|\d+) (week|day)|couple of weeks)\b/i.test(b)) S1.monitoring_or_hold_requested = firstSentence(b.match(/[^.\n]*(hold|monitor)[^.\n]*/i)[0], 30);
+  }
+  if (iRub>=0){ const b = decode(comments[iRub].CommentBody); S1.last_rubrik_email = { date:(comments[iRub].CreatedDate||"").slice(0,16).replace("T"," "), summary: firstSentence(slim(b,"rubrik"), 30), promised_next_update: promisedDate(b) };
+    if (/support tunnel/i.test(b) && iCust < iRub) S1.open_asks_to_customer.push("Enable the support tunnel");
+    if (/shipping details|Ship To Contact/i.test(b) && iCust < iRub) S1.open_asks_to_customer.push("Shipping details for the replacement");
+    if (/maintenance|outage|activity/i.test(b) && iCust < iRub) S1.open_asks_to_customer.push("Confirm any maintenance/activity around the incident time");
+    if (/approv|confirm if we can proceed|proceed with/i.test(b) && iCust < iRub) S1.open_asks_to_customer.push("Approval to proceed with the proposed change");
+    if (/proceed to close|close this case/i.test(b) && iCust < iRub) S1.open_asks_to_customer.push("Confirmation to close the case");
+  }
+  // evidence from internal notes and status comments (newest first, dedup)
+  const ev = new Set(), act = new Set();
+  for (let i=comments.length-1;i>=0;i--){
+    const b = decode(comments[i].CommentBody), k = kinds[i];
+    let m;
+    const statusRe = /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[:|]\s*(?:\d\|)?\s*(BAD\.?|OK\.?)?\s*([^\n|]*(stale|revived|systemd|NfsdDState|check)[^\n]*)/gi;
+    let ns = 0; while ((m = statusRe.exec(b)) && ns < 6){ const line = `Node status ${m[1]} UTC: ${m[3].trim().slice(0,80)}`; if (!ev.has(line)){ ev.add(line); ns++; } }
+    if (/without any active interface/i.test(b)) { const t=(b.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})[^\n]*without any active interface/)||[])[1]; ev.add("Network bond (bond0) lost all active interfaces" + (t?" at "+t.replace("T"," ")+" UTC":"")); }
+    if (/IP conflict/i.test(b)) ev.add("IP address conflict detected on bond0 with an external device");
+    if (/SystemdCheck check FAILED/i.test(b)) ev.add("Health-monitor SystemdCheck failing (OS networking/systemd unresponsive)");
+    if (/NfsdDState/i.test(b)) ev.add("Health-monitor NfsdDState check failed");
+    if (/kronos stall|memory reclaim|avail\s+[\d.]+[MG]/i.test(b) && k==="internal") ev.add("Memory pressure observed on the node around the incident");
+    if (/INDEX_SNAPPABLE_SNAPSHOTS/i.test(b)) ev.add("Multiple VM snapshot indexing jobs running during the incident window");
+    if (/ACTION:\s*([^\n]+)/.test(b)) ev.add("Hardware health: " + b.match(/ACTION:\s*([^\n]+)/)[1].slice(0,100));
+    if (/All FRUS in the node are healthy/i.test(b) && !/ACTION:/i.test(b)) ev.add("Hardware health check: all FRUs healthy");
+    if (/Power Supply AC lost|Redundancy Lost/i.test(b)) ev.add("Power supply reported AC lost / redundancy lost");
+    if (/Fully Redundant/i.test(b) && !/Redundancy Lost/i.test(b)) ev.add("Power supplies fully redundant");
+    if (/\bMISSING\b|PRE_REMOVAL|READY_TO_REMOVE/.test(b) && k==="internal") ev.add("Disk status shows MISSING / pending removal");
+    if (/Removed (\S+) from impacted nodes/i.test(b)) act.add("Alert cleared for " + b.match(/Removed (\S+)/i)[1] + " on " + (comments[i].CreatedDate||"").slice(0,10));
+    if ((m = b.match(/RMA:\s*(RMA-\d+)[\s\S]{0,80}Status:\s*(\w+)/i))) act.add(`${m[1]} ${m[2]} on ${(comments[i].CreatedDate||"").slice(0,10)}`);
+    if (/^Current Status:/i.test(b) && !S1.current_health) S1.current_health = firstSentence(b.replace(/^Current Status:[^\n]*\n/i,""), 30);
+    if (/unsupported CDM version/i.test(b)) S1.risks_or_flags.push("Support Bot flagged an unsupported CDM version on this cluster.");
+  }
+  S1.evidence = [...ev].slice(0,8); S1.actions_taken = [...act].slice(0,6);
+  if (!S1.current_health){ const clr = S1.actions_taken.find(a=>/Alert cleared/.test(a)); S1.current_health = clr ? "Alert has cleared; node reported OK" : "Not stated"; }
+  if (!c["Account.Name"] || c["Account.Name"]==="null") S1.risks_or_flags.push("Account is empty in Salesforce – check the recipient.");
+  if (S1.nodes.length>1) S1.risks_or_flags.push(`${S1.nodes.length} nodes affected – possible shared cause.`);
+  if (fu>=3) S1.risks_or_flags.push(`${fu} Rubrik follow-ups since the customer last replied – consider a ghosted closure.`);
+  if (S1.monitoring_or_hold_requested) S1.risks_or_flags.push("Customer asked to hold/monitor – check the period has ended before closing.");
+  if (S1.unanswered_customer_questions.length) S1.risks_or_flags.push("Customer asked questions that need an answer in this email.");
+  S1.risks_or_flags = [...new Set(S1.risks_or_flags)];
+  // stage
+  if (iRub<0) S1.suggested_stage = "IR needed";
+  else if (iCust>iRub) S1.suggested_stage = /approve|go ahead|proceed|you can do it|happy for you/i.test(S1.last_customer_message.summary) ? "Proceeding after approval" : /close/i.test(S1.last_customer_message.summary) ? "Ready to close" : "Customer replied - respond";
+  else if (fu>=3 && S1.actions_taken.some(a=>/cleared/i.test(a))) S1.suggested_stage = "Ghosted close";
+  else S1.suggested_stage = "Follow-up (no reply)";
+  const lcm = S1.last_customer_message.summary || "";
+  if (S1.suggested_stage==="Customer replied - respond"){
+    if (/tunnel/i.test(lcm) && /\b(enabled|opened|open|is up|turned on|activated|port)\b/i.test(lcm) && !/\b(not|unable|can'?t|cannot|unsuccessful)\b[^.]{0,40}tunnel/i.test(lcm)) S1.suggested_stage = "Tunnel enabled";
+    else if (/address|ship/i.test(lcm) && /(phone|contact|\+?\d[\d\s-]{7,})/i.test(lcm)) S1.suggested_stage = "Shipping received";
+  }
+  let iDel = -1; kinds.forEach((k,i)=>{ if (k==="rma" && /delivered/i.test(decode(comments[i].CommentBody))) iDel = i; });
+  if (iDel >= 0 && iDel > iRub && iDel > iCust){
+    S1.suggested_stage = "Part delivered";
+    const db = decode(comments[iDel].CommentBody);
+    const dd = (db.match(/delivered[^\n]{0,40}?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}[^\n]{0,12})/i)||[])[1];
+    S1.delivery = dd ? dd.replace("T"," ").trim() : (comments[iDel].CreatedDate||"").slice(0,16).replace("T"," ");
+  }
+  if (/^Resolved/i.test(c.Status||"") && !["Customer replied - respond","Tunnel enabled","Shipping received"].includes(S1.suggested_stage)) S1.suggested_stage = "Ready to close";
+  return S1;
+}
+
+function parseCSV(text){
+  const rows=[]; let row=[], cell="", q=false;
+  for (let i=0;i<text.length;i++){
+    const ch=text[i];
+    if (q){ if (ch==='"'){ if (text[i+1]==='"'){ cell+='"'; i++; } else q=false; } else cell+=ch; }
+    else if (ch==='"') q=true;
+    else if (ch===','){ row.push(cell); cell=""; }
+    else if (ch==='\n' || ch==='\r'){ if (ch==='\r' && text[i+1]==='\n') i++; row.push(cell); rows.push(row); row=[]; cell=""; }
+    else cell+=ch;
+  }
+  if (cell || row.length){ row.push(cell); rows.push(row); }
+  const head = rows.shift().map(h=>h.trim().replace(/^"|"$/g,""));
+  const ix = n => head.findIndex(h=>h.toLowerCase()===n.toLowerCase());
+  const ib = ix("CommentBody"), id = ix("CreatedDate"), iw = Math.max(ix("CreatedBy.Name"), ix("CreatedBy"), ix("Created By"));
+  return rows.filter(r=>r.length>1).map(r=>({ CommentBody: r[ib]||"", CreatedDate: r[id]||"", "CreatedBy.Name": iw>=0 ? r[iw] : "" }));
+}
+
+function toIso(s){
+  if (!s) return "";
+  const t = Date.parse(String(s).replace(/(\d{1,2})(st|nd|rd|th)/,"$1").replace(/\bat\b/,""));
+  return isNaN(t) ? "" : new Date(t).toISOString().replace(/\.\d{3}Z$/,".000+0000");
+}
+
+function parseThread(text){
+  const parts = ("\n"+text).split(/\n(?=\s*From:\s)/).map(s=>s.trim()).filter(Boolean);
+  return parts.map(p=>{
+    const date = (p.match(/^\s*(?:Sent|Date|Envoyé)\s*:\s*(.+)$/im)||[])[1] || (p.match(/(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?)/)||[])[1] || "";
+    return { CommentBody: p, CreatedDate: toIso(date), "CreatedBy.Name": /From:\s*\S*rubrik\.com/i.test(p) ? "Rubrik" : "Support Bot" };
+  });
+}
+
+function parseInput(text){
+  text = String(text||"").replace(/\r\n/g,"\n").trim();
+  if (!text) return [];
+  if (/Record \d+:/.test(text)) return parseRecords("\n" + text);
+  const firstLine = text.split("\n")[0];
+  if (/CommentBody/i.test(firstLine) && firstLine.includes(",")) return parseCSV(text);
+  if (/^\s*\[/.test(text)) { try { const a = JSON.parse(text); return a.map(x=>({ CommentBody:x.CommentBody||x.body||"", CreatedDate:x.CreatedDate||x.date||"", "CreatedBy.Name":(x.CreatedBy&&x.CreatedBy.Name)||x["CreatedBy.Name"]||x.author||"" })); } catch(e){} }
+  return parseThread(text);
+}
+
+function dateStr(days){ return plusDays(days) + ", 12:00 PM UTC"; }
+
+function noteField(notes, key){ const m = String(notes||"").match(new RegExp("(?:^|\\n)\\s*(?:" + key + ")\\s*[:\\-]\\s*([^\\n]+)", "i")); return m ? m[1].trim() : ""; }
+
+function hello(S1){ return "Hello " + (S1.contact_name && S1.contact_name!=="Team" ? S1.contact_name : "Team") + ","; }
+
+function extraTemplate(type, c, comments, S1, notes, days){
+  const f = facts(c, comments), date = dateStr(days);
+  const rc = noteField(notes,"root cause") || "[ROOT CAUSE IN PLAIN LANGUAGE]";
+  const act = noteField(notes,"action(?: taken)?") || "[WHAT WAS DONE]";
+  const node = f.node ? `node ${f.node}` : "the affected node";
+  const ev = (S1.evidence||[]).slice(0,3).map(e=>"* "+e).join("\n");
+  if (/Update with findings/.test(type)) return `${hello(S1)}\n\nThank you for your patience while we investigated this alert.\n\nFindings:\nWe reviewed ${node} on cluster ${f.tag}. ${rc}\n${ev ? "\nWhat we observed:\n" + ev + "\n" : ""}\nBusiness Impact:\n${impactFor(f)}\n\nNext Steps:\n[NEXT STEP / ASK]\n\nWe will share an update by ${date}, or sooner if we have more to share.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/Approval request/.test(type)) return `${hello(S1)}\n\nThank you for your patience while we investigated this alert.\n\nWe found that ${rc.replace(/^[A-Z]/, s=>s.toLowerCase())}\n\nTo resolve this, we recommend ${act.replace(/^[A-Z]/, s=>s.toLowerCase())}. [DOWNTIME: none / about N minutes]. This will prevent the alert from recurring.\n\nCould you please confirm if we can proceed with this change? If we haven't heard back, we will follow up by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/Proceeding/.test(type)) return `${hello(S1)}\n\nThank you for the confirmation.\n\nWe will now proceed with ${act === "[WHAT WAS DONE]" ? "[THE ACTIVITY]" : act.replace(/^[A-Z]/, s=>s.toLowerCase())}. Once it's done, we will check the cluster's health and confirm everything is working normally.\n\nWe will share an update by ${date}, or sooner once the activity is complete.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/Short summary/.test(type)) return `${hello(S1)}\n\nThank you for your help.\n\nHere is a short summary of this case:\n\n* Our proactive monitoring detected ${f.type || "an alert"} on ${node} in cluster ${f.tag}${f.time ? " on " + f.time + " UTC" : ""}.\n* ${rc}\n* ${act}\n* The cluster is currently healthy with no further alerts.\n\nSince the cluster is healthy, could you please confirm if we can close this case? If we don't hear back, we will follow up by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/Ghosted/.test(type)){
+    const rub = comments.filter(x=>classify(x)==="rubrik").map(x=>(x.CreatedDate||"").slice(0,10)).filter(Boolean);
+    const first = rub.length ? rub[0] : "[FIRST DATE]", last = rub.length ? rub[rub.length-1] : "[LAST DATE]";
+    return `Hello Team,\n\nThank you for your patience while we followed up on this alert.\n\nProblem Summary:\nOur proactive monitoring detected ${f.type || "an alert"} on ${node} in cluster ${f.tag}${f.time ? " on " + f.time + " UTC" : ""}.\n\nOutreach Summary:\nBetween ${first} and ${last}, we sent ${S1.rubrik_followups_since_last_customer_reply || "several"} emails asking for ${(S1.open_asks_to_customer||[]).join(", ").toLowerCase() || "[WHAT WE ASKED FOR]"}, but we were unable to reach your team.\n\nCurrent Status:\n${S1.current_health && S1.current_health!=="Not stated" ? S1.current_health : "[CURRENT STATUS]"}. [If not verified: Without tunnel access, we were not able to check this directly.]\n\nNext Steps:\n\n* If the issue is still present, please reply to this thread and enable the support tunnel, and we will pick this up right away.\n* If any new alerts are triggered on this cluster, we will reach out to you.\n\nAs we have not received a response and the cluster is currently stable, we are proceeding to close this case. You can reopen it at any time by replying to this email.\n\n${SIGN_TXT}`;
+  }
+  const biz = (S1.rubrik_customer_emails_total||0) < 3 ? `Business Impact: ${impactFor(f)}\n\n` : "";
+  const part = partOf(f) || "[FAILED PART]";
+  const scope = /node is (bad|stale)|NodeBad|NodeStale/i.test(f.type + " " + f.alert)
+    ? "review the node and cluster health details, check the alert state around the incident time, and validate whether this is an active node issue or a transient condition around the reported incident time"
+    : "review the node's hardware health and the cluster health details, and confirm whether the reported fault is still active";
+  if (/^Support tunnel – request/.test(type)) return `${hello(S1)}\n\nGreetings!\n\nWe attempted to connect to the cluster, but the support tunnel is currently closed. Could you please re-enable the support tunnel and share the port number with us?\nApp Tray → Settings → Customer Support → Support Tunnel\n\n${biz}Once I have access, I will continue the investigation and share my next update by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/Support tunnel enabled/.test(type)) return `${hello(S1)}\n\nThank you for enabling the support tunnel.\n\nWith the support tunnel available, I will ${scope}.\n\n${biz}I will share my next update by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/Request shipping details/.test(type)) return `${hello(S1)}\n\nGreetings!\n\nBased on our investigation, the ${part} on ${node} in your ${f.tag || "[CLUSTER TAG]"} cluster needs to be replaced. To raise the RMA for the replacement part, could you please share the following shipping details:\n\n* Contact name:\n* Contact phone number:\n* Contact email address:\n* Complete shipping address (including postal code):\n* Any site access or delivery instructions:\n\nOnce we receive these details, I will raise the RMA and share the tracking information as soon as the dispatch is confirmed. I will follow up again by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/^RMA raised/.test(type)) return `${hello(S1)}\n\nThank you for the shipping details.\n\nWe have raised the RMA for the replacement ${part}, and the request is now in process. We will share the tracking information with you as soon as the dispatch is confirmed. I will share my next update by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  if (/Part delivered/.test(type)) {
+    const delivered = noteField(notes, "delivered(?: on)?") || S1.delivery || "[DELIVERY DATE AND TIME]";
+    const zoom = /zoom/i.test(notes || "");
+    const ask = zoom
+      ? "Could you please let us know when you will be performing the hardware replacement? If you would like Rubrik's assistance, we are happy to schedule a Zoom session and guide you throughout the replacement."
+      : "Could you please let us know whether you will be performing the hardware replacement yourself, or whether you would like us to schedule a Rubrik Field Engineer? If you require a Field Engineer, please share a convenient time for the replacement. Please note that we require at least 24 hours' advance notice to schedule an engineer.";
+    const kb = part === "disk" ? "\n\nPlease refer to the articles below for the disk replacement steps:\nhttps://support.rubrik.com/s/article/000001599 - Disk replacement procedure\nhttps://support.rubrik.com/s/article/000004750 - Turning on the red locate LED on the disk" : "";
+    return `${hello(S1)}\n\nThis is a follow-up email.\n\nFrom the available tracking details, I see that the part was delivered on ${delivered}.\n\n${ask}${kb}\n\nI will follow up again by ${date}.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  }
+  if (/Field Engineer details/.test(type)) {
+    const g = (k, ph) => noteField(notes, k) || ph;
+    return `${hello(S1)}\n\nGreetings of the day!\n\nPlease find the Field Engineer details below:\n\nName: ${g("(?:engineer|fe) name|name", "[ENGINEER NAME]")}\nContact: ${g("contact|phone", "[CONTACT NUMBER]")}\nEmail: ${g("email", "[ENGINEER EMAIL]")}\n\nArrival date: ${g("arrival date|date", "[ARRIVAL DATE]")}\nArrival time: ${g("arrival time|time", "[ARRIVAL TIME] (local time)")}\n\nPlease generate a site access ticket if required and share it with us, along with any special instructions the engineer will need on arrival.\n\n${MON_TXT}\n\n${SIGN_TXT}`;
+  }
+  if (/Resolution Summary/.test(type)) {
+    const have = k => noteField(notes, k);
+    const tail = `No further action is required at this time. If any new alerts are triggered, please reach out, and we will be happy to assist.\n\nIt has been a pleasure working with you on this case. With the cluster confirmed healthy and all nodes stable, we are proceeding to close this case.`;
+    const fix = have("action(?: taken)?|resolution");
+    return `${hello(S1)}\n\nThank you for the update. This is regarding the closure of case ${f.caseNo || "[CASE NUMBER]"}.\n\nResolution Summary:\n\nIssue: A proactive ${(f.type || "alert").toLowerCase()} alert was triggered${f.node ? " on node " + f.node : ""} in your ${f.tag || "[CLUSTER TAG]"} cluster${f.time ? " at " + f.time + " UTC" : ""}.\n\nBusiness Impact: ${impactFor(f)}\n\n${have("root cause") ? "Root Cause: " + have("root cause") : "Root Cause: [ROOT CAUSE IN PLAIN LANGUAGE]"}\n\n${fix ? "Resolution: " + fix : "Resolution: [WHAT WAS DONE]"}\n\nValidation: ${have("validation") || "[VALIDATION – e.g. all nodes and FRUs healthy, no active alerts]"}\n\n${tail}\n\n${SIGN_TXT}`;
+  }
+
+  return null;
+}
+
+function buildDraft(type, c, comments, S1, notes, days){
+  let draft = extraTemplate(type, c, comments, S1, notes, days);
+  if (!draft){
+    const t = templateDraft(type, c, comments);
+    draft = t ? t.draft : null;
+  }
+  if (!draft) return null;
+  if (/Follow-up/.test(type)){
+    const asks = S1.open_asks_to_customer || [];
+    const tunnelBlock = "Could you please enable the support tunnel for the cluster so we can begin our investigation?\nApp Tray → Settings → Customer Support → Support Tunnel";
+    if (asks.length && !asks.some(a=>/tunnel/i.test(a))) draft = draft.replace(tunnelBlock, "Could you please help us with the following so we can complete our investigation?\n\n" + asks.map(a=>"* " + a).join("\n"));
+  }
+  draft = draft.replace(new RegExp(plusDays(2).replace(/[.*+?^${}()|[\]\\]/g,"\\$&"), "g"), plusDays(days));
+  if (S1.contact_name && S1.contact_name!=="Team" && !/Initial Response/.test(type)) draft = draft.replace(/^Hello Team,/, `Hello ${S1.contact_name},`);
+  const rc = noteField(notes,"root cause"), act = noteField(notes,"action(?: taken)?"), dup = noteField(notes,"duplicate(?: of)?");
+  if (rc) draft = draft.replace("[ROOT CAUSE IN PLAIN LANGUAGE]", rc);
+  if (act) draft = draft.replace("[What was done]", act).replace("[What was done and validated.]", act);
+  if (dup) draft = draft.replace(/\[OTHER CASE NUMBER\]/g, dup);
+  draft = draft.replace("[What was investigated]", "Reviewed the node status history and logs around the incident time.");
+  return scrub(draft);
+}
+
+function resolutionDetails(type, c, comments, S1, notes){
+  if (!/closure/i.test(type)) return "";
+  const f = facts(c, comments);
+  const rc = noteField(notes,"root cause") || "[cause]", act = noteField(notes,"action(?: taken)?") || "[action taken]";
+  return `${f.type || "Alert"} on ${f.node ? "node " + f.node : "the cluster"} (cluster ${f.tag}): ${rc} ${act}. The cluster has been confirmed healthy with no further alerts.`.replace(/\.\s*\./g,".");
+}
+
+function iqsCheck(type, text, S1){
+  const isClose = /closure/i.test(type);
+  const r = [];
+  const add = (ok, label) => r.push({ ok, label });
+  add(!/\bdata loss\b/i.test(text), 'No "data loss" wording');
+  add(!/No data disruption to backup\/restore operations was observed/i.test(text), 'No "No data disruption…" line');
+  add(!/\barchive\b/i.test(text), 'Uses "close", not "archive"');
+  add(!/\*\*|^#{1,6}\s/m.test(text), "Plain text (no markdown)");
+  add(/Thanks and Regards,\s*\n\s*\nRohith Madineni\nCustomer Success Engineer – Proactive Support\nRubrik/.test(text) || /Regards,[\s\S]{0,40}\n[A-Z][a-z]+/.test(text), "Sign-off present");
+  if (isClose){
+    add(/Problem Summary:|Issue:/i.test(text) || /Outreach Summary:/i.test(text) || /duplicate/i.test(text), "Problem summary");
+    add(/Root Cause:|Resolution:/i.test(text) || /duplicate|Outreach Summary/i.test(text), "Root cause");
+    add(/Resolution Steps:|Next Steps:|Resolution:/i.test(text) || /duplicate/i.test(text), "Resolution / next steps");
+    add(/healthy|stable|no further alerts|confirmed/i.test(text), "Validation of current health");
+    add(/recommend|prevent|going forward|reopen|reach out/i.test(text), "Prevention / follow-up or reopen invite");
+  } else {
+    add(new RegExp("by\\s+(?:" + MONTHS + ")\\s+\\d{1,2},\\s+\\d{4}", "i").test(text), "WHEN – concrete next-update date (Reliability)");
+    add(/so (that )?we can|to (help|confirm|find|prevent|restore|check|complete|get|ensure|raise|begin|proceed|schedule|continue|validate|review)|because|this will|in order to|validate whether|which (will|allows)/i.test(text), "WHY – reason for the finding or ask");
+    add(/could you|please|we (have|found|confirmed|reviewed|will)/i.test(text), "WHAT – action or finding stated");
+    if ((S1.rubrik_customer_emails_total||0) < 3) add(/Business Impact|could (affect|impact)|risk|reduced resiliency|redundancy/i.test(text), "Business impact (first 3 emails)");
+    add(/monitored 24×7|monitored 24x7/i.test(text), "24×7 monitoring line");
+  }
+  const br = (text.match(/\[[A-Z][^\]]{2,60}\]/g)||[]);
+  add(!br.length, br.length ? "Fill placeholders: " + [...new Set(br)].join(", ") : "No unfilled placeholders");
+  return r;
+}
+
+
+
+// ---------- personalisation + Salesforce page-data adapter ----------
+function personalize(draft, sig){
+  if (!draft || !sig || !sig.name) return draft;
+  const first = String(sig.name).trim().split(/\s+/)[0];
+  const block = `Thanks and Regards,\n\n${sig.name.trim()}\n${(sig.designation || "Customer Success Engineer – Proactive Support").trim()}\nRubrik`;
+  return draft.split(SIGN_TXT).join(block).replace("My name is Rohith,", `My name is ${first},`);
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { SIGN_TXT, MON_TXT, MONTHS, STAGE_TO_TYPE, DRAFT_TYPES, esc, decode, parseRecords, classify, slim, scrub, alertType, clusterOf, plusDays, facts, partOf, impactFor, nextStepFor, scenarioAsk, templateDraft, rubrikSinceCustomer, ordinal, autoType, firstSentence, promisedDate, nameFrom, localSummary, parseCSV, toIso, parseThread, parseInput, dateStr, noteField, hello, extraTemplate, buildDraft, resolutionDetails, iqsCheck, personalize };
+}
